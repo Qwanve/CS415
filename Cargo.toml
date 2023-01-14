@@ -1,0 +1,17 @@
+[package]
+name = "prototype1"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = "0.6.2"
+axum-extra = { version = "0.4", features = ["spa"] }
+tokio = { version = "1.24.1", features = ["full"] }
+tera = "1"
+once_cell="1"
+serde = { version= "1", features = ["derive"] }
+fastrand = "1"
+enum-iterator = "1"
+parking_lot = "0.12"
