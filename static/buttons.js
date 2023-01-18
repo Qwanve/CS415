@@ -1,41 +1,38 @@
 window.onload = function() {
+    let ws = new WebSocket("ws://localhost:3000/ws");
     let deal_button = document.getElementById("deal");
+    let shuffle_button = document.getElementById("shuffle");
+
+    let cards_dealt = 0;
+
+    ws.onopen = function() {
+        deal_button.disabled = false;
+        shuffle_button.disabled = false;
+    }
+    
     deal_button.onclick = function() {
-        let xhr = new XMLHttpRequest();
-        let url = "/deal";
-        xhr.open("POST", url, true);
-        // xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.onreadystatechange = function () {
-            if (xhr.readyState === 4 && xhr.status === 200) {
-                var json = JSON.parse(xhr.responseText);
-                console.log(json);
-                if (json === null) {
-                    deal_button.disabled = true;
-                } else {
-                    addCard(json);
-                }
-            } else if (xhr.readyState === 4 && xhr.status !== 200) {
-                console.error("Server error. Failed to deal next card");
-                deal_button.disabled = true;
-            }  
-        };
-        xhr.send();
+        ws.send(JSON.stringify("Deal"));
     }
 
-    let shuffle_button = document.getElementById("shuffle");
     shuffle_button.onclick = function() {
-        let xhr = new XMLHttpRequest();
-        let url = "/shuffle";
-        xhr.open("POST", url, true);
-        // xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4 && xhr.status === 200) {
-                console.log("Shuffled");
-                clearCards();
-                deal_button.disabled = false;
+        ws.send(JSON.stringify("Shuffle"));
+        clearCards();
+        deal_button.disabled = false;
+        cards_dealt = 0;
+    }
+
+    ws.onmessage = (event) => {
+        let msg = JSON.parse(event.data);
+        console.log(msg);
+        if (msg === null) {
+            deal_button.disabled = true;
+        } else {
+            cards_dealt += 1;
+            if (cards_dealt >= 52) {
+                deal_button.disabled = true;
             }
-        };
-        xhr.send();
+            addCard(msg);
+        }
     }
 }
 
