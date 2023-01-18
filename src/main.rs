@@ -1,5 +1,9 @@
 use parking_lot::Mutex;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +43,7 @@ async fn main() -> Result<(), impl std::error::Error> {
         .fallback(error_404)
         .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
 
-    let addr = ([0; 4], 3000).into();
+    let addr = (Ipv4Addr::LOCALHOST, 3000).into();
     axum::Server::bind(&addr)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
