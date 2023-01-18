@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,13 +28,12 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 
 #[tokio::main]
 async fn main() -> Result<(), impl std::error::Error> {
-    let deck = Arc::new(Mutex::new(new_deck()));
-    fastrand::shuffle(&mut deck.lock());
+    let decks = Arc::new(Mutex::new(HashMap::new()));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/", get(home))
         .route("/ws", get(ws_handler))
-        .with_state(deck)
+        .with_state(decks)
         .merge(assets)
         .fallback(error_404);
 
@@ -51,12 +50,16 @@ async fn home() -> impl IntoResponse {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<Vec<Card>>>>,
+    State(state): State<Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| websocket(socket, who, state))
 }
 
-async fn websocket(mut socket: WebSocket, who: SocketAddr, deck: Arc<Mutex<Vec<Card>>>) {
+async fn websocket(
+    mut socket: WebSocket,
+    who: SocketAddr,
+    deck: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>,
+) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}!");
         return;
@@ -78,14 +81,14 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, deck: Arc<Mutex<Vec<C
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
                 Ok(Action::Deal) => {
-                    let card = deal(Arc::clone(&deck));
+                    let card = deal(who, Arc::clone(&deck));
                     let msg = serde_json::to_string(&card).expect("Failed to serialize card");
                     let Ok(_) = socket.send(Message::Text(msg)).await else {
                         println!("Failed to send {who} the next card");
                         return;
                     };
                 }
-                Ok(Action::Shuffle) => shuffle(Arc::clone(&deck)),
+                Ok(Action::Shuffle) => shuffle(who, Arc::clone(&deck)),
                 Err(_) => println!("Client {who} sent invalid data"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -111,15 +114,23 @@ enum Action {
     Shuffle,
 }
 
-fn deal(deck: Arc<Mutex<Vec<Card>>>) -> Option<Card> {
-    let card = deck.lock().pop();
+fn deal(who: SocketAddr, decks: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>) -> Option<Card> {
+    let card = decks
+        .lock()
+        .entry(who)
+        .or_insert_with(new_shuffled_deck)
+        .pop();
     card
 }
 
-fn shuffle(state: Arc<Mutex<Vec<Card>>>) {
+fn shuffle(who: SocketAddr, decks: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>) {
+    decks.lock().insert(who, new_shuffled_deck());
+}
+
+fn new_shuffled_deck() -> Vec<Card> {
     let mut deck = new_deck();
     fastrand::shuffle(&mut deck);
-    *state.lock() = deck;
+    deck
 }
 
 fn new_deck() -> Vec<Card> {
