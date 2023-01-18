@@ -17,6 +17,7 @@ use axum_extra::routing::SpaRouter;
 use enum_iterator::{all, Sequence};
 use once_cell::sync::Lazy;
 use tera::Tera;
+use tower_http::catch_panic::CatchPanicLayer;
 
 static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
     Ok(t) => t,
@@ -35,7 +36,8 @@ async fn main() -> Result<(), impl std::error::Error> {
         .route("/ws", get(ws_handler))
         .with_state(decks)
         .merge(assets)
-        .fallback(error_404);
+        .fallback(error_404)
+        .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
 
     let addr = ([0; 4], 3000).into();
     axum::Server::bind(&addr)
@@ -105,6 +107,13 @@ async fn error_404() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
         Html(TERA.render("404.html", &tera::Context::new()).unwrap()),
+    )
+}
+
+fn error_500() -> impl IntoResponse {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Html(TERA.render("500.html", &tera::Context::new()).unwrap()),
     )
 }
 
