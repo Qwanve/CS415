@@ -57,10 +57,16 @@ async fn home() -> impl IntoResponse {
 }
 
 async fn ws_handler(
-    ws: WebSocketUpgrade,
+    ws: Option<WebSocketUpgrade>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(state): State<Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>>,
 ) -> impl IntoResponse {
+    let Some(ws) = ws else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(TERA.render("400.html", &tera::Context::new()).unwrap())
+        ).into_response();
+    };
     ws.on_upgrade(move |socket| websocket(socket, who, state))
 }
 
