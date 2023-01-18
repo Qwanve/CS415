@@ -33,6 +33,9 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 
 #[tokio::main]
 async fn main() -> Result<(), impl std::error::Error> {
+    //Force initialization in the beginning to ensure all templates parse before
+    // opening the server to users
+    Lazy::force(&TERA);
     let decks = Arc::new(Mutex::new(HashMap::new()));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
