@@ -3,22 +3,19 @@ window.onload = function() {
     let deal_button = document.getElementById("deal");
     let shuffle_button = document.getElementById("shuffle");
 
-    let cards_dealt = 0;
-
     ws.onopen = function() {
         deal_button.disabled = false;
         shuffle_button.disabled = false;
     }
     
     deal_button.onclick = function() {
-        ws.send(JSON.stringify("Deal"));
+        ws.send(JSON.stringify("Next"));
     }
 
     shuffle_button.onclick = function() {
-        ws.send(JSON.stringify("Shuffle"));
+        ws.send(JSON.stringify("Clear"));
         clearCards();
         deal_button.disabled = false;
-        cards_dealt = 0;
     }
 
     ws.onmessage = (event) => {
@@ -27,21 +24,15 @@ window.onload = function() {
         if (msg === null) {
             deal_button.disabled = true;
         } else {
-            cards_dealt += 1;
-            if (cards_dealt >= 52) {
-                deal_button.disabled = true;
-            }
             addCard(msg);
         }
     }
 }
 
 
-function addCard(card) {
-    let name = "" + card.rank + card.suit;
-    let url = "/static/cards/" + name + ".svg";
+function addCard(num) {
     let img = document.createElement('li');
-    img.innerHTML = name;
+    img.innerHTML = num;
     let ul = document.getElementById("cards");
     ul.appendChild(img);
 }

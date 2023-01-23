@@ -18,7 +18,6 @@ use axum::{
     Router,
 };
 use axum_extra::routing::SpaRouter;
-use enum_iterator::{all, Sequence};
 use once_cell::sync::Lazy;
 use tera::Tera;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -59,7 +58,7 @@ async fn home() -> impl IntoResponse {
 async fn ws_handler(
     ws: Option<WebSocketUpgrade>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>>,
+    State(state): State<Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>>,
 ) -> impl IntoResponse {
     let Some(ws) = ws else {
         return (
@@ -73,7 +72,7 @@ async fn ws_handler(
 async fn websocket(
     mut socket: WebSocket,
     who: SocketAddr,
-    deck: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>,
+    deck: Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
 ) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}!");
@@ -95,16 +94,23 @@ async fn websocket(
 
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
-                Ok(Action::Deal) => {
-                    let card = deal(who, Arc::clone(&deck));
-                    let msg = serde_json::to_string(&card).expect("Failed to serialize card");
-                    let Ok(_) = socket.send(Message::Text(msg)).await else {
-                        println!("Failed to send {who} the next card");
+                Ok(Action::Next) => {
+                    println!("{who} requested the next num");
+                    let num = fastrand::u8(0..=100);
+                    deck.lock()
+                        .entry(who)
+                        .or_insert_with(|| Vec::new())
+                        .push(num);
+                    let Ok(_) = socket.send(Message::Text(serde_json::to_string(&num).unwrap())).await else {
+                        println!("Failed to send the next number to {who}");
                         return;
                     };
                 }
-                Ok(Action::Shuffle) => shuffle(who, Arc::clone(&deck)),
-                Err(_) => println!("Client {who} sent invalid data"),
+                Ok(Action::Clear) => {
+                    println!("{who} requested a clear");
+                    deck.lock().insert(who, Vec::new());
+                }
+                Err(_) => println!("{who} sent an invalid action"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
             Message::Close(_) => {
@@ -132,60 +138,6 @@ fn error_500() -> impl IntoResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Action {
-    Deal,
-    Shuffle,
-}
-
-fn deal(who: SocketAddr, decks: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>) -> Option<Card> {
-    let card = decks
-        .lock()
-        .entry(who)
-        .or_insert_with(new_shuffled_deck)
-        .pop();
-    card
-}
-
-fn shuffle(who: SocketAddr, decks: Arc<Mutex<HashMap<SocketAddr, Vec<Card>>>>) {
-    decks.lock().insert(who, new_shuffled_deck());
-}
-
-fn new_shuffled_deck() -> Vec<Card> {
-    let mut deck = new_deck();
-    fastrand::shuffle(&mut deck);
-    deck
-}
-
-fn new_deck() -> Vec<Card> {
-    all::<Card>().collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Sequence)]
-enum Rank {
-    Ace,
-    Two,
-    Three,
-    Four,
-    Five,
-    Six,
-    Seven,
-    Eight,
-    Nine,
-    Ten,
-    Jack,
-    Queen,
-    King,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Sequence)]
-enum Suit {
-    Diamonds,
-    Hearts,
-    Spades,
-    Clubs,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Sequence)]
-struct Card {
-    rank: Rank,
-    suit: Suit,
+    Next,
+    Clear,
 }
