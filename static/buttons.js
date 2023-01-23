@@ -14,13 +14,16 @@ window.onload = function() {
 
     clear_button.onclick = function() {
         ws.send(JSON.stringify("Clear"));
-        clearNumbers();
     }
 
     ws.onmessage = (event) => {
         let msg = JSON.parse(event.data);
         console.log(msg);
-        addNumber(msg);
+        if (Number.isInteger(msg)) {
+            addNumber(msg);
+        } else if (msg == "Clear") {
+            clearNumbers();
+        }
     }
 }
 

@@ -35,12 +35,12 @@ async fn main() -> Result<(), impl std::error::Error> {
     //Force initialization in the beginning to ensure all templates parse before
     // opening the server to users
     Lazy::force(&TERA);
-    let decks = Arc::new(Mutex::new(HashMap::new()));
+    let state = Arc::new(Mutex::new(HashMap::new()));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/", get(home))
         .route("/ws", get(ws_handler))
-        .with_state(decks)
+        .with_state(state)
         .merge(assets)
         .fallback(error_404)
         .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
@@ -72,7 +72,7 @@ async fn ws_handler(
 async fn websocket(
     mut socket: WebSocket,
     who: SocketAddr,
-    deck: Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
+    state: Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
 ) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}!");
@@ -95,20 +95,16 @@ async fn websocket(
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
                 Ok(Action::Next) => {
-                    println!("{who} requested the next num");
-                    let num = fastrand::u8(0..=100);
-                    deck.lock()
-                        .entry(who)
-                        .or_insert_with(|| Vec::new())
-                        .push(num);
-                    let Ok(_) = socket.send(Message::Text(serde_json::to_string(&num).unwrap())).await else {
-                        println!("Failed to send the next number to {who}");
+                    let Ok(_) = send_num(&mut socket, who, &state).await else {
+                        println!("Failed to send next number to {who}");
                         return;
                     };
                 }
                 Ok(Action::Clear) => {
-                    println!("{who} requested a clear");
-                    deck.lock().insert(who, Vec::new());
+                    let Ok(_) = send_clear(&mut socket, who, &state).await else {
+                        println!("Failed to send clear notification to {who}");
+                        return;
+                    };
                 }
                 Err(_) => println!("{who} sent an invalid action"),
             },
@@ -140,4 +136,35 @@ fn error_500() -> impl IntoResponse {
 enum Action {
     Next,
     Clear,
+}
+
+async fn send_num(
+    socket: &mut WebSocket,
+    who: SocketAddr,
+    state: &Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
+) -> Result<(), axum::Error> {
+    println!("{who} requested the next num");
+    let num = fastrand::u8(0..=100);
+    state
+        .lock()
+        .entry(who)
+        .or_insert_with(|| Vec::new())
+        .push(num);
+    socket
+        .send(Message::Text(serde_json::to_string(&num).unwrap()))
+        .await
+}
+
+async fn send_clear(
+    socket: &mut WebSocket,
+    who: SocketAddr,
+    state: &Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
+) -> Result<(), axum::Error> {
+    println!("{who} requested a clear");
+    state.lock().insert(who, Vec::new());
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Action::Clear).unwrap(),
+        ))
+        .await
 }
