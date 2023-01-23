@@ -1,44 +1,39 @@
 window.onload = function() {
     let ws = new WebSocket("ws://localhost:3000/ws");
-    let deal_button = document.getElementById("deal");
-    let shuffle_button = document.getElementById("shuffle");
+    let next_button = document.getElementById("next");
+    let clear_button = document.getElementById("clear");
 
     ws.onopen = function() {
-        deal_button.disabled = false;
-        shuffle_button.disabled = false;
+        next_button.disabled = false;
+        clear_button.disabled = false;
     }
     
-    deal_button.onclick = function() {
+    next_button.onclick = function() {
         ws.send(JSON.stringify("Next"));
     }
 
-    shuffle_button.onclick = function() {
+    clear_button.onclick = function() {
         ws.send(JSON.stringify("Clear"));
-        clearCards();
-        deal_button.disabled = false;
+        clearNumbers();
     }
 
     ws.onmessage = (event) => {
         let msg = JSON.parse(event.data);
         console.log(msg);
-        if (msg === null) {
-            deal_button.disabled = true;
-        } else {
-            addCard(msg);
-        }
+        addNumber(msg);
     }
 }
 
 
-function addCard(num) {
+function addNumber(num) {
     let img = document.createElement('li');
     img.innerHTML = num;
-    let ul = document.getElementById("cards");
+    let ul = document.getElementById("numbers");
     ul.appendChild(img);
 }
 
-function clearCards() {
-    let div = document.getElementById("cards");
+function clearNumbers() {
+    let div = document.getElementById("numbers");
     while (div.firstChild !== null) {
         div.removeChild(div.firstChild);
     }
