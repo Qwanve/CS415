@@ -40,11 +40,10 @@ window.onload = function() {
 function addCard(card) {
     let name = "" + card.rank + card.suit;
     let url = "/static/cards/" + name + ".svg";
-    let img = document.createElement('img');
-    img.src = url;
-    img.alt = name;
-    let div = document.getElementById("cards");
-    div.appendChild(img);
+    let img = document.createElement('li');
+    img.innerHTML = name;
+    let ul = document.getElementById("cards");
+    ul.appendChild(img);
 }
 
 function clearCards() {
