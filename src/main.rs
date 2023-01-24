@@ -1,6 +1,5 @@
-use parking_lot::Mutex;
+use async_mutex::Mutex;
 use std::{
-    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -18,6 +17,10 @@ use axum::{
     Router,
 };
 use axum_extra::routing::SpaRouter;
+use futures::{
+    sink::SinkExt,
+    stream::{SplitSink, StreamExt},
+};
 use once_cell::sync::Lazy;
 use tera::Tera;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -30,12 +33,18 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
     }
 });
 
+#[derive(Default)]
+struct MyState {
+    pub numbers: Vec<u8>,
+    pub senders: Vec<(SocketAddr, SplitSink<WebSocket, Message>)>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), impl std::error::Error> {
     //Force initialization in the beginning to ensure all templates parse before
     // opening the server to users
     Lazy::force(&TERA);
-    let state = Arc::new(Mutex::new(HashMap::new()));
+    let state = Arc::new(Mutex::new(MyState::default()));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/", get(home))
@@ -58,7 +67,7 @@ async fn home() -> impl IntoResponse {
 async fn ws_handler(
     ws: Option<WebSocketUpgrade>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>>,
+    State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
     let Some(ws) = ws else {
         return (
@@ -69,11 +78,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| websocket(socket, who, state))
 }
 
-async fn websocket(
-    mut socket: WebSocket,
-    who: SocketAddr,
-    state: Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
-) {
+async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MyState>>) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}!");
         return;
@@ -81,8 +86,17 @@ async fn websocket(
 
     println!("Pinged {who}...");
 
+    let json_state = serde_json::to_string(&state.lock().await.numbers.clone()).unwrap();
+    let Ok(_) = socket.send(Message::Text(json_state)).await else {
+        println!("Failed to send state to {who}");
+        return;
+    };
+
+    let (sender, mut socket) = socket.split();
+    state.lock().await.senders.push((who, sender));
+
     loop {
-        let Some(msg) = socket.recv().await else {
+        let Some(msg) = socket.next().await else {
             println!("Connection with {who} closed abruptly");
             return;
         };
@@ -94,18 +108,8 @@ async fn websocket(
 
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
-                Ok(Action::Next) => {
-                    let Ok(_) = send_num(&mut socket, who, &state).await else {
-                        println!("Failed to send next number to {who}");
-                        return;
-                    };
-                }
-                Ok(Action::Clear) => {
-                    let Ok(_) = send_clear(&mut socket, who, &state).await else {
-                        println!("Failed to send clear notification to {who}");
-                        return;
-                    };
-                }
+                Ok(Action::Next) => send_num(who, &state).await,
+                Ok(Action::Clear) => send_clear(who, &state).await,
                 Err(_) => println!("{who} sent an invalid action"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -138,33 +142,33 @@ enum Action {
     Clear,
 }
 
-async fn send_num(
-    socket: &mut WebSocket,
-    who: SocketAddr,
-    state: &Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
-) -> Result<(), axum::Error> {
+async fn send_num(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     println!("{who} requested the next num");
     let num = fastrand::u8(0..=100);
-    state
-        .lock()
-        .entry(who)
-        .or_insert_with(|| Vec::new())
-        .push(num);
-    socket
-        .send(Message::Text(serde_json::to_string(&num).unwrap()))
-        .await
+    state.lock().await.numbers.push(num);
+    for (who, socket) in state.lock().await.senders.iter_mut() {
+        if socket
+            .send(Message::Text(serde_json::to_string(&num).unwrap()))
+            .await
+            .is_err()
+        {
+            println!("Failed to send next number to {who}");
+        };
+    }
 }
 
-async fn send_clear(
-    socket: &mut WebSocket,
-    who: SocketAddr,
-    state: &Arc<Mutex<HashMap<SocketAddr, Vec<u8>>>>,
-) -> Result<(), axum::Error> {
+async fn send_clear(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     println!("{who} requested a clear");
-    state.lock().insert(who, Vec::new());
-    socket
-        .send(Message::Text(
-            serde_json::to_string(&Action::Clear).unwrap(),
-        ))
-        .await
+    state.lock().await.numbers.clear();
+    for (who, socket) in state.lock().await.senders.iter_mut() {
+        if socket
+            .send(Message::Text(
+                serde_json::to_string(&Action::Clear).unwrap(),
+            ))
+            .await
+            .is_err()
+        {
+            println!("Failed to send 'clear' command to {who}");
+        }
+    }
 }

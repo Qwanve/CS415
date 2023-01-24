@@ -23,6 +23,10 @@ window.onload = function() {
             addNumber(msg);
         } else if (msg == "Clear") {
             clearNumbers();
+        } else if (Array.isArray(msg)) {
+            initState(msg);
+        } else {
+            console.error("Unknown message from server");
         }
     }
 }
@@ -39,5 +43,11 @@ function clearNumbers() {
     let div = document.getElementById("numbers");
     while (div.firstChild !== null) {
         div.removeChild(div.firstChild);
+    }
+}
+
+function initState(arr) {
+    for (const idx in arr) {
+        addNumber(arr[idx]);
     }
 }
