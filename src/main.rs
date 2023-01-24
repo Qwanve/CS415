@@ -1,5 +1,6 @@
 use async_mutex::Mutex;
 use std::{
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -36,7 +37,7 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 #[derive(Default)]
 struct MyState {
     pub numbers: Vec<u8>,
-    pub senders: Vec<(SocketAddr, SplitSink<WebSocket, Message>)>,
+    pub senders: HashMap<SocketAddr, Option<SplitSink<WebSocket, Message>>>,
 }
 
 #[tokio::main]
@@ -93,9 +94,13 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MySt
     };
 
     let (sender, mut socket) = socket.split();
-    state.lock().await.senders.push((who, sender));
+    state.lock().await.senders.insert(who, Some(sender));
 
     loop {
+        if state.lock().await.senders.get(&who).unwrap().is_none() {
+            state.lock().await.senders.remove(&who).unwrap();
+            return;
+        }
         let Some(msg) = socket.next().await else {
             println!("Connection with {who} closed abruptly");
             return;
@@ -147,11 +152,15 @@ async fn send_num(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     let num = fastrand::u8(0..=100);
     state.lock().await.numbers.push(num);
     for (who, socket) in state.lock().await.senders.iter_mut() {
+        let Some(socket) = socket else {
+            continue;
+        };
         if socket
             .send(Message::Text(serde_json::to_string(&num).unwrap()))
             .await
             .is_err()
         {
+            state.lock().await.senders.get_mut(who).unwrap().take();
             println!("Failed to send next number to {who}");
         };
     }
@@ -161,6 +170,9 @@ async fn send_clear(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     println!("{who} requested a clear");
     state.lock().await.numbers.clear();
     for (who, socket) in state.lock().await.senders.iter_mut() {
+        let Some(socket) = socket else {
+            continue;
+        };
         if socket
             .send(Message::Text(
                 serde_json::to_string(&Action::Clear).unwrap(),
@@ -168,6 +180,7 @@ async fn send_clear(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
             .await
             .is_err()
         {
+            state.lock().await.senders.get_mut(who).take();
             println!("Failed to send 'clear' command to {who}");
         }
     }
