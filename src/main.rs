@@ -120,6 +120,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MySt
             Message::Pong(_) => println!("Recieved pong from {who}"),
             Message::Close(_) => {
                 println!("{who} has closed the connection");
+                state.lock().await.senders.remove(&who).unwrap();
                 return;
             }
             _ => println!("Unknown message {msg:?}"),
