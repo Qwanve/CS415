@@ -152,16 +152,13 @@ async fn send_num(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     println!("{who} requested the next num");
     let num = fastrand::u8(0..=100);
     state.lock().await.numbers.push(num);
-    for (who, socket) in state.lock().await.senders.iter_mut() {
-        let Some(socket) = socket else {
+    for (who, socket_entry) in state.lock().await.senders.iter_mut() {
+        let Some(socket) = socket_entry else {
             continue;
         };
-        if socket
-            .send(Message::Text(serde_json::to_string(&num).unwrap()))
-            .await
-            .is_err()
-        {
-            state.lock().await.senders.get_mut(who).unwrap().take();
+        let num = Message::Text(serde_json::to_string(&num).unwrap());
+        if socket.send(num).await.is_err() {
+            *socket_entry = None;
             println!("Failed to send next number to {who}");
         };
     }
@@ -170,18 +167,13 @@ async fn send_num(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
 async fn send_clear(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
     println!("{who} requested a clear");
     state.lock().await.numbers.clear();
-    for (who, socket) in state.lock().await.senders.iter_mut() {
-        let Some(socket) = socket else {
+    for (who, socket_entry) in state.lock().await.senders.iter_mut() {
+        let Some(socket) = socket_entry else {
             continue;
         };
-        if socket
-            .send(Message::Text(
-                serde_json::to_string(&Action::Clear).unwrap(),
-            ))
-            .await
-            .is_err()
-        {
-            state.lock().await.senders.get_mut(who).take();
+        let clear = Message::Text(serde_json::to_string(&Action::Clear).unwrap());
+        if socket.send(clear).await.is_err() {
+            *socket_entry = None;
             println!("Failed to send 'clear' command to {who}");
         }
     }
