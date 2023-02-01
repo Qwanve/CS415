@@ -1,7 +1,7 @@
 use async_mutex::Mutex;
 use std::{
-    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
+    ops::ControlFlow,
     sync::Arc,
 };
 
@@ -36,8 +36,7 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 
 #[derive(Default)]
 struct MyState {
-    pub numbers: Vec<u8>,
-    pub senders: HashMap<SocketAddr, Option<SplitSink<WebSocket, Message>>>,
+    pub senders: Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>,
 }
 
 #[tokio::main]
@@ -87,45 +86,79 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MySt
 
     println!("Pinged {who}...");
 
-    let json_state = serde_json::to_string(&state.lock().await.numbers.clone()).unwrap();
-    let Ok(_) = socket.send(Message::Text(json_state)).await else {
-        println!("Failed to send state to {who}");
-        return;
-    };
+    let (mut sender, mut socket) = socket.split();
+    {
+        let mut lock = state.lock().await;
 
-    let (sender, mut socket) = socket.split();
-    state.lock().await.senders.insert(who, Some(sender));
+        if lock.senders.len() == 0 {
+            let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+            let Ok(_) = sender.send(Message::Text(msg)).await else {
+                println!("Failed to send message to {who}");
+                return;
+            };
+        }
+        lock.senders.add((who, sender));
+    }
 
     loop {
-        if state.lock().await.senders.get(&who).unwrap().is_none() {
-            state.lock().await.senders.remove(&who).unwrap();
-            return;
-        }
         let Some(msg) = socket.next().await else {
             println!("Connection with {who} closed abruptly");
             return;
         };
 
-        let Ok(msg) = msg else {
-            println!("Error {} while recieving from {who}", msg.unwrap_err());
-            return;
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                println!("Error {e} while recieving from {who}");
+                return;
+            }
         };
 
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
-                Ok(Action::Next) => send_num(who, &state).await,
-                Ok(Action::Clear) => send_clear(who, &state).await,
+                Ok(PlayerAction::Click) => {
+                    while state.lock().await.senders.len() != 0 {
+                        let success = notify_next_player(Arc::clone(&state)).await.is_break();
+                        if success {
+                            break;
+                        }
+                    }
+                }
                 Err(_) => println!("{who} sent an invalid action"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
             Message::Close(_) => {
                 println!("{who} has closed the connection");
-                state.lock().await.senders.remove(&who).unwrap();
+                let _old_connection = state
+                    .lock()
+                    .await
+                    .senders
+                    .remove(|(v, _conn)| *v == who)
+                    .unwrap();
+                while state.lock().await.senders.len() != 0 {
+                    let success = notify_next_player(Arc::clone(&state)).await.is_break();
+                    if success {
+                        break;
+                    }
+                }
                 return;
             }
             _ => println!("Unknown message {msg:?}"),
         }
     }
+}
+
+async fn notify_next_player(state: Arc<Mutex<MyState>>) -> ControlFlow<()> {
+    let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+    let mut lock = state.lock().await;
+    let (who, socket) = lock.senders.next_mut().unwrap();
+    let Ok(_) = socket.send(Message::Text(msg)).await else {
+        println!("Failed to send message to {who}");
+        let who = who.clone();
+        let _old_connection = lock.senders.remove(|(v, _)| *v == who);
+        return ControlFlow::Continue(());
+    };
+    return ControlFlow::Break(());
 }
 
 async fn error_404() -> impl IntoResponse {
@@ -143,38 +176,45 @@ fn error_500() -> impl IntoResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum Action {
-    Next,
-    Clear,
+enum PlayerAction {
+    Click,
 }
 
-async fn send_num(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
-    println!("{who} requested the next num");
-    let num = fastrand::u8(0..=100);
-    state.lock().await.numbers.push(num);
-    for (who, socket_entry) in state.lock().await.senders.iter_mut() {
-        let Some(socket) = socket_entry else {
-            continue;
-        };
-        let num = Message::Text(serde_json::to_string(&num).unwrap());
-        if socket.send(num).await.is_err() {
-            *socket_entry = None;
-            println!("Failed to send next number to {who}");
-        };
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum ServerAction {
+    YourTurn,
+}
+
+struct Cycler<T> {
+    index: usize,
+    inner: Vec<T>,
+}
+
+impl<T> Default for Cycler<T> {
+    fn default() -> Self {
+        Cycler {
+            inner: Vec::new(),
+            index: 0,
+        }
     }
 }
 
-async fn send_clear(who: SocketAddr, state: &Arc<Mutex<MyState>>) {
-    println!("{who} requested a clear");
-    state.lock().await.numbers.clear();
-    for (who, socket_entry) in state.lock().await.senders.iter_mut() {
-        let Some(socket) = socket_entry else {
-            continue;
-        };
-        let clear = Message::Text(serde_json::to_string(&Action::Clear).unwrap());
-        if socket.send(clear).await.is_err() {
-            *socket_entry = None;
-            println!("Failed to send 'clear' command to {who}");
+impl<T> Cycler<T> {
+    fn add(&mut self, value: T) {
+        self.inner.push(value)
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn remove(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
+        let index = self.inner.iter().position(predicate)?;
+        if index == self.len() - 1 {
+            self.index = 0;
         }
+        Some(self.inner.remove(index))
+    }
+    fn next_mut(&mut self) -> Option<&mut T> {
+        self.index = (self.index + 1) % self.inner.len();
+        self.inner.get_mut(self.index)
     }
 }
