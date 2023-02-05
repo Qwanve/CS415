@@ -2,6 +2,7 @@ window.onload = function() {
     let ws = null;
     let join_button = document.getElementById("join");
     let click_button = document.getElementById("clickme");
+    let text_box = document.getElementById("textbox");
 
     join_button.onclick = function() {
         ws = new WebSocket("ws://localhost:3000/ws");
@@ -9,6 +10,7 @@ window.onload = function() {
             join_button.disabled = true;
             join_button.hidden = true;
             click_button.hidden = false;
+            text_box.hidden = true;
         }
         ws.onmessage = (event) => {
             let msg = JSON.parse(event.data);
