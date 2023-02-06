@@ -13,3 +13,5 @@ tera = "1"
 once_cell="1"
 fastrand = "1"
 tower-http = { version = "0.3.5", features = ["catch-panic"] }
+axum-login = { version = "0.4.1", features = ["sqlite", "sqlx"] }
+sqlx = { version = "0.6.2", features = ["runtime-tokio-rustls", "sqlite"] }
