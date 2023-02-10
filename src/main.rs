@@ -30,10 +30,10 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct User {
-    id: u32,
+    id: i64,
     username: String,
     password_hash: String,
-    balance: u32,
+    balance: i64,
 }
 
 impl AuthUser<()> for User {
@@ -127,19 +127,19 @@ async fn recieve_login(
     Form(request): Form<LoginRequest>,
 ) {
     println!("Recieved login request from {who}");
-    sqlx::query_as!(
+    let user = sqlx::query_as!(
         User,
         "select * from users where username=? AND password_hash=?",
         request.username,
         request.password
-    );
-    let user: User = sqlx::query_as("SELECT * FROM users WHERE username=$1 AND password=$2")
-        .bind(request.username)
-        .bind(request.password)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    println!("Found user with balance: {}", user.balance);
+    )
+    .fetch_optional(&db)
+    .await
+    .unwrap();
+    match user {
+        Some(user) => println!("Found user with balance: {}", user.balance),
+        None => println!("User not found"),
+    }
 }
 
 async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) {
