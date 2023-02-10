@@ -1,11 +1,11 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use axum::{
-    extract::ConnectInfo,
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
-    Extension, Router,
+    Extension, Form, Router,
 };
 use axum_extra::routing::SpaRouter;
 use axum_login::{
@@ -15,7 +15,8 @@ use axum_login::{
     AuthLayer, AuthUser, RequireAuthorizationLayer, SqliteStore,
 };
 use once_cell::sync::Lazy;
-use sqlx::Pool;
+use serde::Deserialize;
+use sqlx::{Pool, SqlitePool};
 use tera::Tera;
 use tower_http::catch_panic::CatchPanicLayer;
 
@@ -60,20 +61,34 @@ async fn main() -> Result<(), impl std::error::Error> {
     let secret = std::array::from_fn::<u8, 64, _>(|_| fastrand::u8(0..u8::MAX));
     let session_store = SessionMemoryStore::new();
     let session_layer = SessionLayer::new(session_store, &secret);
-    let connection = Pool::connect("database.sqlite").await.unwrap();
-    let conn = SqliteStore::<User>::new(connection);
-    let auth_layer = AuthLayer::new(conn, &secret);
+    let connection = SqlitePool::connect("sqlite://database").await.unwrap();
+    let state = connection.clone();
+    let sqlite_store = SqliteStore::<User>::new(connection);
+    let auth_layer = AuthLayer::new(sqlite_store, &secret);
+
+    // sqlx::query!(
+    //     "CREATE TABLE users (
+    //         id int NOT NULL UNIQUE PRIMARY KEY,
+    //         username varchar(255) NOT NULL UNIQUE,
+    //         password varchar(255) NOT NULL,
+    //         balance int NOT NULL
+    //     )"
+    // )
+    // .execute(&state)
+    // .await
+    // .unwrap();
 
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
+        .route("/gamble", get(gamble).post(recieve_gamble))
+        .route_layer(RequireAuthorizationLayer::<User, ()>::login())
         .route("/", get(home))
         .route("/login", get(login_form).post(recieve_login))
         .route("/logout", get(logout))
-        .route("/gamble", get(gamble).post(recieve_gamble))
-        .route_layer(RequireAuthorizationLayer::<User, ()>::login())
-        .merge(assets)
+        .with_state(state)
         .layer(auth_layer)
         .layer(session_layer)
+        .merge(assets)
         .fallback(error_404)
         .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
 
@@ -83,16 +98,48 @@ async fn main() -> Result<(), impl std::error::Error> {
         .await
 }
 
-async fn home() -> impl IntoResponse {
-    Html(TERA.render("index.html", &tera::Context::new()).unwrap())
+async fn home(auth: Auth) -> impl IntoResponse {
+    let mut context = tera::Context::new();
+    context.insert(
+        "username",
+        &auth
+            .current_user
+            .map(|user| user.username)
+            .unwrap_or_default(),
+    );
+    Html(TERA.render("index.html", &context).unwrap())
 }
 
 async fn login_form() -> impl IntoResponse {
-    todo!()
+    Html(TERA.render("login.html", &tera::Context::new()).unwrap())
 }
 
-async fn recieve_login(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) {
-    todo!()
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+async fn recieve_login(
+    mut auth: Auth,
+    ConnectInfo(who): ConnectInfo<SocketAddr>,
+    State(db): State<SqlitePool>,
+    Form(request): Form<LoginRequest>,
+) {
+    println!("Recieved login request from {who}");
+    sqlx::query_as!(
+        User,
+        "select * from users where username=? AND password_hash=?",
+        request.username,
+        request.password
+    );
+    let user: User = sqlx::query_as("SELECT * FROM users WHERE username=$1 AND password=$2")
+        .bind(request.username)
+        .bind(request.password)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    println!("Found user with balance: {}", user.balance);
 }
 
 async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) {

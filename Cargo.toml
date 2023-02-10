@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.6.2", features = ["ws"] }
+axum = { version = "0.6.2", features = ["ws", "form"] }
 axum-extra = { version = "0.4", features = ["spa"] }
 tokio = { version = "1.24.1", features = ["full"] }
 tera = "1"
@@ -15,3 +15,4 @@ fastrand = "1"
 tower-http = { version = "0.3.5", features = ["catch-panic"] }
 axum-login = { version = "0.4.1", features = ["sqlite", "sqlx"] }
 sqlx = { version = "0.6.2", features = ["runtime-tokio-rustls", "sqlite"] }
+serde = "1.0.152"
