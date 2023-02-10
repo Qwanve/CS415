@@ -1,9 +1,9 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     routing::get,
     Extension, Form, Router,
 };
@@ -110,8 +110,18 @@ async fn home(auth: Auth) -> impl IntoResponse {
     Html(TERA.render("index.html", &context).unwrap())
 }
 
-async fn login_form() -> impl IntoResponse {
-    Html(TERA.render("login.html", &tera::Context::new()).unwrap())
+#[derive(Deserialize)]
+struct Failed {
+    failed: bool,
+}
+
+async fn login_form(failed: Option<Query<Failed>>) -> impl IntoResponse {
+    let mut context = tera::Context::new();
+
+    if let Some(Query(failed)) = failed {
+        context.insert("failed", &failed.failed);
+    }
+    Html(TERA.render("login.html", &context).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -125,7 +135,7 @@ async fn recieve_login(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(db): State<SqlitePool>,
     Form(request): Form<LoginRequest>,
-) {
+) -> Redirect {
     println!("Recieved login request from {who}");
     let user = sqlx::query_as!(
         User,
@@ -137,13 +147,21 @@ async fn recieve_login(
     .await
     .unwrap();
     match user {
-        Some(user) => println!("Found user with balance: {}", user.balance),
-        None => println!("User not found"),
+        Some(user) => {
+            println!("Loggin in {who} as {}", user.username);
+            auth.login(&user).await.unwrap();
+            return Redirect::to("/");
+        }
+        None => {
+            println!("User not found");
+            return Redirect::to("/login?failed=true");
+        }
     }
 }
 
 async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) {
-    todo!()
+    println!("Recieved logout request from {who}");
+    auth.logout().await
 }
 
 async fn gamble(Extension(user): Extension<User>) -> impl IntoResponse {
