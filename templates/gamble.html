@@ -1,13 +1,24 @@
 {% extends "base.html" %}
 {% block title %} Gamble {% endblock %}
 {% block content %}
-  <h1> Balance: {{balance}} </h1>
-  <form method="POST">
+  <h1> Balance: ${{balance}} </h1>
+  {% if bankrupt is defined and bankrupt %}
+    <h1> You are bankrupt. You lose! <h1>
+  {% else %}
+    {% if failed is defined %}
+      {% if failed %}
+        <h3> You lost! </h3>
+      {% else %}
+        <h3> You won! </h3>
+      {% endif %}
+    {% endif %}
+    <form method="POST">
 
-    <label><input type=radio name="choice" value="Heads" checked required> Heads </label><br> 
-    <label><input type=radio name="choice" value="Tails" required> Tails </label><br>
-    <label> Bet Amount <input type=number min=1 max={{balance}} value=1 name="amount"></label><br>
+      <label><input type=radio name="choice" value="Heads" checked required> Heads </label><br> 
+      <label><input type=radio name="choice" value="Tails" required> Tails </label><br>
+      <label> Bet Amount: $<input type=number min=1 max={{balance}} step=1 value=1 name="amount"></label><br>
 
-    <input type=submit value="GAMBLE TIME">
-  </form>
+      <input type=submit value="GAMBLE TIME">
+    </form>
+  {% endif %}
 {% endblock %}

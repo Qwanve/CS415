@@ -175,8 +175,17 @@ async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) -> Re
     Redirect::to("/")
 }
 
-async fn gamble(Extension(user): Extension<User>) -> impl IntoResponse {
+async fn gamble(
+    Extension(user): Extension<User>,
+    failed: Option<Query<Failed>>,
+) -> impl IntoResponse {
     let mut context = tera::Context::new();
+    if let Some(Query(failed)) = failed {
+        context.insert("failed", &failed.failed);
+    }
+    if user.balance <= 0 {
+        context.insert("bankrupt", &true);
+    }
     context.insert("balance", &user.balance);
     context.insert("is_logged_in", &true);
     Html(TERA.render("gamble.html", &context).unwrap())
@@ -195,28 +204,44 @@ struct Bet {
 }
 
 async fn recieve_gamble(
-    Extension(mut user): Extension<User>,
+    Extension(user): Extension<User>,
+    State(db): State<SqlitePool>,
     Form(bet): Form<Bet>,
 ) -> impl IntoResponse {
-    println!("Recieved bet of {:?}, amount: {}", bet.choice, bet.amount);
+    println!(
+        "Recieved bet of {:?}, amount: {} from {}",
+        bet.choice, bet.amount, user.username
+    );
     let res = match fastrand::bool() {
         true => Coin::Heads,
         false => Coin::Tails,
     };
     if bet.choice == res {
         println!("{} won", user.username);
-        let new_value = user.balance + i64::from(bet.amount);
         sqlx::query!(
             "UPDATE users
-             SET balance = ?
+             SET balance = balance + ?
              WHERE id = ?",
-            new_value,
+            bet.amount,
             user.id
-        );
-        user.balance += i64::from(bet.amount);
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        return Redirect::to("/gamble?failed=false");
     } else {
         println!("{} lost", user.username);
-        user.balance -= i64::from(bet.amount);
+        sqlx::query!(
+            "UPDATE users
+             SET balance = balance - ?
+             WHERE id = ?",
+            bet.amount,
+            user.id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        return Redirect::to("/gamble?failed=true");
     }
 }
 
