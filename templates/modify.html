@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %} Modify {% endblock %}
+{% block content %}
+  <form method="POST">
+    <label> Balance: <input type=number value={{balance}} min=0 required name="value"> </label>
+    <input type=submit value="Submit">
+{% endblock %}

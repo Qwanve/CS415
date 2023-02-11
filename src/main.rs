@@ -83,6 +83,7 @@ async fn main() -> Result<(), impl std::error::Error> {
     let app = Router::new()
         .route("/gamble", get(gamble).post(recieve_gamble))
         .route("/logout", get(logout).post(logout))
+        .route("/modify", get(modify).post(recieve_modify))
         .route_layer(RequireAuthorizationLayer::<User, ()>::login())
         .route("/", get(home))
         .route("/login", get(login_form).post(recieve_login))
@@ -226,6 +227,35 @@ async fn recieve_gamble(
         println!("{} lost", user.username);
         user.balance -= i64::from(bet.amount);
     }
+}
+
+async fn modify(Extension(user): Extension<User>) -> impl IntoResponse {
+    let mut context = tera::Context::new();
+    context.insert("is_logged_in", &true);
+    context.insert("balance", &user.balance);
+    Html(TERA.render("modify.html", &context).unwrap())
+}
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+struct Modify {
+    value: u32,
+}
+
+async fn recieve_modify(
+    Extension(user): Extension<User>,
+    State(db): State<SqlitePool>,
+    Form(request): Form<Modify>,
+) -> impl IntoResponse {
+    sqlx::query!(
+        "UPDATE users
+         SET balance = ?
+         WHERE id = ?",
+        request.value,
+        user.id
+    )
+    .execute(&db)
+    .await
+    .unwrap();
     return Redirect::to("/gamble");
 }
 
