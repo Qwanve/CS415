@@ -87,6 +87,8 @@ async fn main() -> Result<(), impl std::error::Error> {
         .route("/", get(home))
         .route("/login", get(login_form).post(recieve_login))
         .with_state(state)
+        .merge(assets)
+        .fallback(error_404)
         .layer(
             //Redirect to login if unauthorized
             ServiceBuilder::new()
@@ -102,8 +104,6 @@ async fn main() -> Result<(), impl std::error::Error> {
         )
         // .layer(auth_layer)
         // .layer(session_layer)
-        .merge(assets)
-        .fallback(error_404)
         .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
 
     let addr = (Ipv4Addr::LOCALHOST, 3000).into();
@@ -130,13 +130,14 @@ struct Failed {
     failed: bool,
 }
 
-async fn login_form(failed: Option<Query<Failed>>) -> impl IntoResponse {
+async fn login_form(failed: Option<Query<Failed>>, auth: Auth) -> impl IntoResponse {
     let mut context = tera::Context::new();
+    context.insert("is_logged_in", &false);
 
     if let Some(Query(failed)) = failed {
         context.insert("failed", &failed.failed);
     }
-    Html(TERA.render("login.html", &context).unwrap())
+    Html(TERA.render("login.html", &context).unwrap()).into_response()
 }
 
 #[derive(Deserialize)]
@@ -185,6 +186,7 @@ async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) -> Re
 async fn gamble(Extension(user): Extension<User>) -> impl IntoResponse {
     let mut context = tera::Context::new();
     context.insert("balance", &user.balance);
+    context.insert("is_logged_in", &true);
     Html(TERA.render("gamble.html", &context).unwrap())
 }
 
@@ -227,10 +229,12 @@ async fn recieve_gamble(
     return Redirect::to("/gamble");
 }
 
-async fn error_404() -> impl IntoResponse {
+async fn error_404(auth: Auth) -> impl IntoResponse {
+    let mut context = tera::Context::new();
+    context.insert("is_logged_in", &auth.current_user.is_some());
     (
         StatusCode::NOT_FOUND,
-        Html(TERA.render("404.html", &tera::Context::new()).unwrap()),
+        Html(TERA.render("404.html", &context).unwrap()),
     )
 }
 
