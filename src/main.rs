@@ -67,18 +67,6 @@ async fn main() -> Result<(), impl std::error::Error> {
     let sqlite_store = SqliteStore::<User>::new(connection);
     let auth_layer = AuthLayer::new(sqlite_store, &secret);
 
-    // sqlx::query!(
-    //     "CREATE TABLE users (
-    //         id int NOT NULL UNIQUE PRIMARY KEY,
-    //         username varchar(255) NOT NULL UNIQUE,
-    //         password varchar(255) NOT NULL,
-    //         balance int NOT NULL
-    //     )"
-    // )
-    // .execute(&state)
-    // .await
-    // .unwrap();
-
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/gamble", get(gamble).post(recieve_gamble))
