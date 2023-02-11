@@ -4,4 +4,10 @@
 {% endblock %}
 {% block content %}
   <h1> Hello {{ username }} </h1>
+  {% if is_logged_in %}
+    <a href="/gamble"> Gamble </a><br>
+    <a href="/logout"> Logout </a>
+  {% else %}
+    <a href="/login"> Login </a>
+  {% endif %}
 {% endblock %}

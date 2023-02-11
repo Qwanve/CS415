@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use axum::{
     extract::{ConnectInfo, Query, State},
-    http::StatusCode,
+    http::{Response, StatusCode},
     response::{Html, IntoResponse, Redirect},
     routing::get,
     Extension, Form, Router,
@@ -16,8 +16,9 @@ use axum_login::{
 };
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use sqlx::{Pool, SqlitePool};
+use sqlx::SqlitePool;
 use tera::Tera;
+use tower::builder::ServiceBuilder;
 use tower_http::catch_panic::CatchPanicLayer;
 
 static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
@@ -81,13 +82,26 @@ async fn main() -> Result<(), impl std::error::Error> {
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/gamble", get(gamble).post(recieve_gamble))
+        .route("/logout", get(logout).post(logout))
         .route_layer(RequireAuthorizationLayer::<User, ()>::login())
         .route("/", get(home))
         .route("/login", get(login_form).post(recieve_login))
-        .route("/logout", get(logout))
         .with_state(state)
-        .layer(auth_layer)
-        .layer(session_layer)
+        .layer(
+            //Redirect to login if unauthorized
+            ServiceBuilder::new()
+                .layer(session_layer)
+                .layer(auth_layer)
+                .map_response(|r: Response<_>| {
+                    if r.status() == StatusCode::UNAUTHORIZED {
+                        Redirect::to("/login").into_response()
+                    } else {
+                        r
+                    }
+                }),
+        )
+        // .layer(auth_layer)
+        // .layer(session_layer)
         .merge(assets)
         .fallback(error_404)
         .layer(CatchPanicLayer::custom(|_| error_500().into_response()));
@@ -100,6 +114,7 @@ async fn main() -> Result<(), impl std::error::Error> {
 
 async fn home(auth: Auth) -> impl IntoResponse {
     let mut context = tera::Context::new();
+    context.insert("is_logged_in", &auth.current_user.is_some());
     context.insert(
         "username",
         &auth
@@ -137,6 +152,7 @@ async fn recieve_login(
     Form(request): Form<LoginRequest>,
 ) -> Redirect {
     println!("Recieved login request from {who}");
+
     let user = sqlx::query_as!(
         User,
         "select * from users where username=? AND password_hash=?",
@@ -146,11 +162,12 @@ async fn recieve_login(
     .fetch_optional(&db)
     .await
     .unwrap();
+
     match user {
         Some(user) => {
             println!("Loggin in {who} as {}", user.username);
             auth.login(&user).await.unwrap();
-            return Redirect::to("/");
+            return Redirect::to("/gamble");
         }
         None => {
             println!("User not found");
@@ -159,17 +176,55 @@ async fn recieve_login(
     }
 }
 
-async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) {
+async fn logout(mut auth: Auth, ConnectInfo(who): ConnectInfo<SocketAddr>) -> Redirect {
     println!("Recieved logout request from {who}");
-    auth.logout().await
+    auth.logout().await;
+    Redirect::to("/")
 }
 
 async fn gamble(Extension(user): Extension<User>) -> impl IntoResponse {
-    todo!()
+    let mut context = tera::Context::new();
+    context.insert("balance", &user.balance);
+    Html(TERA.render("gamble.html", &context).unwrap())
 }
 
-async fn recieve_gamble(Extension(user): Extension<User>) -> impl IntoResponse {
-    todo!()
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+enum Coin {
+    Heads,
+    Tails,
+}
+
+#[derive(Debug, Deserialize)]
+struct Bet {
+    choice: Coin,
+    amount: u32,
+}
+
+async fn recieve_gamble(
+    Extension(mut user): Extension<User>,
+    Form(bet): Form<Bet>,
+) -> impl IntoResponse {
+    println!("Recieved bet of {:?}, amount: {}", bet.choice, bet.amount);
+    let res = match fastrand::bool() {
+        true => Coin::Heads,
+        false => Coin::Tails,
+    };
+    if bet.choice == res {
+        println!("{} won", user.username);
+        let new_value = user.balance + i64::from(bet.amount);
+        sqlx::query!(
+            "UPDATE users
+             SET balance = ?
+             WHERE id = ?",
+            new_value,
+            user.id
+        );
+        user.balance += i64::from(bet.amount);
+    } else {
+        println!("{} lost", user.username);
+        user.balance -= i64::from(bet.amount);
+    }
+    return Redirect::to("/gamble");
 }
 
 async fn error_404() -> impl IntoResponse {

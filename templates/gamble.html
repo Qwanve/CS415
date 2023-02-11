@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %} Gamble {% endblock %}
+{% block content %}
+  <h1> Balance: {{balance}} </h1>
+  <form method="POST">
+
+    <label><input type=radio name="choice" value="Heads" checked required> Heads </label><br> 
+    <label><input type=radio name="choice" value="Tails" required> Tails </label><br>
+    <label> Bet Amount <input type=number min=1 max={{balance}} value=1 name="amount"></label><br>
+
+    <input type=submit value="GAMBLE TIME">
+  </form>
+{% endblock %}

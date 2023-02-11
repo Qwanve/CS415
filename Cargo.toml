@@ -16,3 +16,4 @@ tower-http = { version = "0.3.5", features = ["catch-panic"] }
 axum-login = { version = "0.4.1", features = ["sqlite", "sqlx"] }
 sqlx = { version = "0.6.2", features = ["runtime-tokio-rustls", "sqlite"] }
 serde = "1.0.152"
+tower = "0.4.13"
