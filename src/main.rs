@@ -120,6 +120,9 @@ struct Failed {
 }
 
 async fn login_form(failed: Option<Query<Failed>>, auth: Auth) -> impl IntoResponse {
+    if auth.current_user.is_some() {
+        return Redirect::to("/gamble").into_response();
+    }
     let mut context = tera::Context::new();
     context.insert("is_logged_in", &false);
 
