@@ -129,16 +129,18 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MySt
             Message::Pong(_) => println!("Recieved pong from {who}"),
             Message::Close(_) => {
                 println!("{who} has closed the connection");
-                let _old_connection = state
-                    .lock()
-                    .await
-                    .senders
-                    .remove(|(v, _conn)| *v == who)
-                    .unwrap();
-                while state.lock().await.senders.len() != 0 {
-                    let success = notify_next_player(Arc::clone(&state)).await.is_break();
-                    if success {
-                        break;
+                let was_current = {
+                    let mut state = state.lock().await;
+                    let was_current = state.senders.is_current(|(v, _conn)| *v == who);
+                    let _old_connection = state.senders.remove(|(v, _conn)| *v == who).unwrap();
+                    was_current
+                };
+                if was_current {
+                    while state.lock().await.senders.len() != 0 {
+                        let success = notify_next_player(Arc::clone(&state)).await.is_break();
+                        if success {
+                            break;
+                        }
                     }
                 }
                 return;
@@ -205,6 +207,13 @@ impl<T> Cycler<T> {
     }
     fn len(&self) -> usize {
         self.inner.len()
+    }
+    fn is_current(&self, predicate: impl FnMut(&T) -> bool) -> bool {
+        let index = self.inner.iter().position(predicate);
+        let Some(index) = index else {
+            return false;
+        };
+        index == self.index
     }
     fn remove(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
         let index = self.inner.iter().position(predicate)?;
