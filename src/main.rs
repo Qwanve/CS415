@@ -1,4 +1,3 @@
-use async_mutex::Mutex;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     ops::ControlFlow,
@@ -24,6 +23,7 @@ use futures::{
 };
 use once_cell::sync::Lazy;
 use tera::Tera;
+use tokio::sync::Mutex;
 use tower_http::catch_panic::CatchPanicLayer;
 
 static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
