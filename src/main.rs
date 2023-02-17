@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     ops::ControlFlow,
     sync::Arc,
@@ -38,7 +39,7 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
 
 #[derive(Default)]
 struct MyState {
-    pub senders: Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>,
+    rooms: HashMap<RoomId, Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>>,
 }
 
 #[tokio::main]
@@ -95,23 +96,46 @@ fn new_id() -> RoomId {
 
 async fn create_room(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(_state): State<Arc<Mutex<MyState>>>,
+    State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
     let id = new_id();
     println!("{who} is trying to create a new room with id {id}");
-    Redirect::to(&format!("/{id}"))
+    let rooms = &mut state.lock().await.rooms;
+    if rooms.contains_key(&id) {
+        println!("Room {id} already exists");
+        Redirect::to("/")
+    } else {
+        println!("Created room {id}");
+        rooms.insert(id.clone(), Cycler::default());
+        Redirect::to(&format!("/{id}"))
+    }
 }
 
 async fn ingame(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     id: Option<Path<RoomId>>,
-    State(_state): State<Arc<Mutex<MyState>>>,
+    State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
     let Some(Path(id)) = id else {
         println!("{who} tried to join with an invalid id");
-        return;
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(TERA.render("400.html", &tera::Context::new()).unwrap())
+        );
     };
-    println!("{who} has joined game {id}");
+    if state.lock().await.rooms.contains_key(&id) {
+        println!("{who} has joined game {id}");
+    } else {
+        println!("{who} joined a game that doesn't exist");
+        return (
+            StatusCode::NOT_FOUND,
+            Html(TERA.render("404.html", &tera::Context::new()).unwrap()),
+        );
+    }
+    return (
+        StatusCode::OK,
+        Html(TERA.render("game.html", &tera::Context::new()).unwrap()),
+    );
 }
 
 async fn ws_handler(
