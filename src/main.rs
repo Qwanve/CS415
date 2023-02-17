@@ -4,16 +4,17 @@ use std::{
     sync::Arc,
 };
 
+use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        ConnectInfo, State,
+        ConnectInfo, Path, State,
     },
     http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::get,
+    response::{Html, IntoResponse, Redirect},
+    routing::{get, post},
     Router,
 };
 use axum_extra::routing::SpaRouter;
@@ -21,6 +22,7 @@ use futures::{
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
 };
+use nutype::nutype;
 use once_cell::sync::Lazy;
 use tera::Tera;
 use tokio::sync::Mutex;
@@ -48,7 +50,9 @@ async fn main() -> Result<(), impl std::error::Error> {
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/", get(home))
-        .route("/ws", get(ws_handler))
+        .route("/create", post(create_room))
+        .route("/:id", get(ingame))
+        .route("/:id/ws", get(ws_handler))
         .with_state(state)
         .merge(assets)
         .fallback(error_404)
@@ -64,8 +68,55 @@ async fn home() -> impl IntoResponse {
     Html(TERA.render("index.html", &tera::Context::new()).unwrap())
 }
 
+#[nutype(
+    sanitize(trim, uppercase)
+    validate(
+        max_len = 6,
+        min_len = 6,
+        with = |s: &str| {
+            s.chars().all(char::is_alphabetic)
+        }
+    )
+)]
+#[derive(Deserialize, Serialize, *)]
+struct RoomId(String);
+
+impl std::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.clone().into_inner())
+    }
+}
+
+fn new_id() -> RoomId {
+    let alphabet = ('A'..='Z').collect::<Vec<_>>();
+    let id = nanoid!(6, &alphabet);
+    RoomId::new(id).unwrap()
+}
+
+async fn create_room(
+    ConnectInfo(who): ConnectInfo<SocketAddr>,
+    State(_state): State<Arc<Mutex<MyState>>>,
+) -> impl IntoResponse {
+    let id = new_id();
+    println!("{who} is trying to create a new room with id {id}");
+    Redirect::to(&format!("/{id}"))
+}
+
+async fn ingame(
+    ConnectInfo(who): ConnectInfo<SocketAddr>,
+    id: Option<Path<RoomId>>,
+    State(_state): State<Arc<Mutex<MyState>>>,
+) -> impl IntoResponse {
+    let Some(Path(id)) = id else {
+        println!("{who} tried to join with an invalid id");
+        return;
+    };
+    println!("{who} has joined game {id}");
+}
+
 async fn ws_handler(
     ws: Option<WebSocketUpgrade>,
+    Path(id): Path<RoomId>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
@@ -75,10 +126,10 @@ async fn ws_handler(
             Html(TERA.render("400.html", &tera::Context::new()).unwrap())
         ).into_response();
     };
-    ws.on_upgrade(move |socket| websocket(socket, who, state))
+    ws.on_upgrade(move |socket| websocket(socket, who, id, state))
 }
 
-async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MyState>>) {
+async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Arc<Mutex<MyState>>) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}!");
         return;
@@ -124,7 +175,11 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, state: Arc<Mutex<MySt
                         }
                     }
                 }
-                Err(_) => println!("{who} sent an invalid action"),
+                Ok(PlayerAction::JoinRoom(id)) => {
+                    println!("{who} is trying to join room {id}");
+                }
+                Ok(PlayerAction::NewRoom) => {}
+                Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
             Message::Close(_) => {
@@ -177,8 +232,10 @@ fn error_500() -> impl IntoResponse {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum PlayerAction {
+    NewRoom,
+    JoinRoom(String),
     Click,
 }
 
