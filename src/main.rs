@@ -103,6 +103,7 @@ async fn create_room(
     let rooms = &mut state.lock().await.rooms;
     if rooms.contains_key(&id) {
         println!("Room {id} already exists");
+        //TODO: Display error
         Redirect::to("/")
     } else {
         println!("Created room {id}");
@@ -191,57 +192,64 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
         };
 
         match msg {
-            //         Message::Text(msg) => match serde_json::from_str(&msg) {
-            //             Ok(PlayerAction::Click) => {
-            //                 while state.lock().await.senders.len() != 0 {
-            //                     let success = notify_next_player(Arc::clone(&state)).await.is_break();
-            //                     if success {
-            //                         break;
-            //                     }
-            //                 }
-            //             }
-            //             Ok(PlayerAction::JoinRoom(id)) => {
-            //                 println!("{who} is trying to join room {id}");
-            //             }
-            //             Ok(PlayerAction::NewRoom) => {}
-            //             Err(_) => println!("{who} sent an invalid action: {msg}"),
-            //         },
+            Message::Text(msg) => match serde_json::from_str(&msg) {
+                Ok(PlayerAction::Click) => {
+                    let mut lock = state.lock().await;
+                    let room = lock.rooms.get_mut(&id).unwrap();
+                    while room.len() != 0 {
+                        let success = notify_next_player(room).await.is_break();
+                        if success {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => println!("{who} sent an invalid action: {msg}"),
+            },
             Message::Pong(_) => println!("Recieved pong from {who}"),
-            //             Message::Close(_) => {
-            //             println!("{who} has closed the connection");
-            //             let was_current = {
-            //                 let mut state = state.lock().await;
-            //                 let was_current = state.senders.is_current(|(v, _conn)| *v == who);
-            //                 let _old_connection = state.senders.remove(|(v, _conn)| *v == who).unwrap();
-            //                 was_current
-            //             };
-            //             if was_current {
-            //                 while state.lock().await.senders.len() != 0 {
-            //                     let success = notify_next_player(Arc::clone(&state)).await.is_break();
-            //                     if success {
-            //                         break;
-            //                     }
-            //                 }
-            //             }
-            //             return;
-            //         }
+            Message::Close(_) => {
+                println!("{who} has closed the connection");
+                let mut lock = state.lock().await;
+                let room = lock.rooms.get_mut(&id).unwrap();
+                let was_current = {
+                    let was_current = room.is_current(|(v, _conn)| *v == who);
+                    let _old_connection = room.remove(|(v, _conn)| *v == who).unwrap();
+                    was_current
+                };
+                if was_current {
+                    while room.len() != 0 {
+                        let new_current = room.current().unwrap();
+                        let success = notify_player(&mut new_current.1).await;
+                        if success {
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
             _ => println!("Unknown message {msg:?}"),
         }
     }
 }
 
-// async fn notify_next_player(state: Arc<Mutex<MyState>>) -> ControlFlow<()> {
-//     let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
-//     let mut lock = state.lock().await;
-//     let (who, socket) = lock.senders.next_mut().unwrap();
-//     let Ok(_) = socket.send(Message::Text(msg)).await else {
-//         println!("Failed to send message to {who}");
-//         let who = who.clone();
-//         let _old_connection = lock.senders.remove(|(v, _)| *v == who);
-//         return ControlFlow::Continue(());
-//     };
-//     return ControlFlow::Break(());
-// }
+async fn notify_next_player(
+    room: &mut Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>,
+) -> ControlFlow<()> {
+    let (who, socket) = room.next_mut().unwrap();
+    let succeeded = notify_player(socket).await;
+    if !succeeded {
+        let who = who.clone();
+        println!("Failed to notify {who}");
+        let _old_connection = room.remove(|(v, _)| *v == who).unwrap();
+        ControlFlow::Continue(())
+    } else {
+        ControlFlow::Break(())
+    }
+}
+
+async fn notify_player(socket: &mut SplitSink<WebSocket, Message>) -> bool {
+    let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+    socket.send(Message::Text(msg)).await.is_ok()
+}
 
 async fn error_404() -> impl IntoResponse {
     (
@@ -259,8 +267,6 @@ fn error_500() -> impl IntoResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum PlayerAction {
-    NewRoom,
-    JoinRoom(String),
     Click,
 }
 
@@ -296,6 +302,9 @@ impl<T> Cycler<T> {
             return false;
         };
         index == self.index
+    }
+    fn current(&mut self) -> Option<&mut T> {
+        self.inner.get_mut(self.index)
     }
     fn remove(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
         let index = self.inner.iter().position(predicate)?;
