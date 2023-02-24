@@ -4,10 +4,9 @@
 {% endblock %}
 {% block content %}
   <h2> Join an existing room: </h2><br>
-  <form method="POST">
-    <input type="text" id="roomid">
-    <input type=submit id="joinroom" value="Join Room">
-  </form>
+  <script defer src="/static/index.js"></script>
+  <input type="text" id="roomid">
+  <input type=submit id="joinroom" value="Join Room" onclick="join()">
   <h2> Or create a new room: </h2><br>
   <form method="POST" action="/create">
     <input type=submit id="createroom" value="Create Room">
