@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
-    ops::ControlFlow,
     sync::Arc,
 };
 
@@ -37,11 +36,6 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
     }
 });
 
-#[derive(Default)]
-struct MyState {
-    rooms: HashMap<RoomId, Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>>,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), impl std::error::Error> {
     //Force initialization in the beginning to ensure all templates parse before
@@ -52,6 +46,7 @@ async fn main() -> Result<(), impl std::error::Error> {
     let app = Router::new()
         .route("/", get(home))
         .route("/create", post(create_room))
+        .route("/favicon.ico", get(error_404))
         .route("/:id", get(ingame))
         .route("/:id/ws", get(ws_handler))
         .with_state(state)
@@ -67,31 +62,6 @@ async fn main() -> Result<(), impl std::error::Error> {
 
 async fn home() -> impl IntoResponse {
     Html(TERA.render("index.html", &tera::Context::new()).unwrap())
-}
-
-#[nutype(
-    sanitize(trim, lowercase)
-    validate(
-        max_len = 6,
-        min_len = 6,
-        with = |s: &str| {
-            s.chars().all(char::is_alphabetic)
-        }
-    )
-)]
-#[derive(Deserialize, Serialize, *)]
-struct RoomId(String);
-
-impl std::fmt::Display for RoomId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.clone().into_inner())
-    }
-}
-
-fn new_id() -> RoomId {
-    let alphabet = ('a'..='z').collect::<Vec<_>>();
-    let id = nanoid!(6, &alphabet);
-    RoomId::new(id).unwrap()
 }
 
 async fn create_room(
@@ -156,13 +126,14 @@ async fn ws_handler(
 
 async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Arc<Mutex<MyState>>) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
-        println!("Could not send ping to {who}!");
+        println!("Could not send ping to {who}");
         return;
     };
 
     println!("Pinged {who}...");
 
     let (mut sender, mut socket) = socket.split();
+
     {
         let lock = &mut state.lock().await.rooms;
         let room = lock.get_mut(&id).unwrap();
@@ -196,12 +167,13 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                 Ok(PlayerAction::Click) => {
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
-                    while room.len() != 0 {
-                        let success = notify_next_player(room).await.is_break();
-                        if success {
-                            break;
-                        }
+                    if !room.is_current(|(v, _)| *v == who) {
+                        println!("{who} sent their turn out of order!");
+                        continue;
                     }
+                    let next = room.next_mut().unwrap();
+                    println!("It is now {}'s turn", next.0);
+                    notify_player(room).await;
                 }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
@@ -216,13 +188,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     was_current
                 };
                 if was_current {
-                    while room.len() != 0 {
-                        let new_current = room.current().unwrap();
-                        let success = notify_player(&mut new_current.1).await;
-                        if success {
-                            break;
-                        }
-                    }
+                    notify_player(room).await;
                 }
                 return;
             }
@@ -231,24 +197,18 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
     }
 }
 
-async fn notify_next_player(
-    room: &mut Cycler<(SocketAddr, SplitSink<WebSocket, Message>)>,
-) -> ControlFlow<()> {
-    let (who, socket) = room.next_mut().unwrap();
-    let succeeded = notify_player(socket).await;
-    if !succeeded {
-        let who = who.clone();
-        println!("Failed to notify {who}");
-        let _old_connection = room.remove(|(v, _)| *v == who).unwrap();
-        ControlFlow::Continue(())
-    } else {
-        ControlFlow::Break(())
+async fn notify_player(room: &mut Cycler<Connection>) {
+    while room.len() > 0 {
+        let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+        let current = room.current().unwrap();
+        if current.1.send(Message::Text(msg)).await.is_ok() {
+            break;
+        } else {
+            let who = current.0.clone();
+            println!("Failed to send {} notification", current.0);
+            let _old_conn = room.remove(|(v, _)| *v == who).unwrap();
+        }
     }
-}
-
-async fn notify_player(socket: &mut SplitSink<WebSocket, Message>) -> bool {
-    let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
-    socket.send(Message::Text(msg)).await.is_ok()
 }
 
 async fn error_404() -> impl IntoResponse {
@@ -273,6 +233,38 @@ enum PlayerAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum ServerAction {
     YourTurn,
+}
+
+type Connection = (SocketAddr, SplitSink<WebSocket, Message>);
+
+#[derive(Default)]
+struct MyState {
+    rooms: HashMap<RoomId, Cycler<Connection>>,
+}
+
+#[nutype(
+    sanitize(trim, lowercase)
+    validate(
+        max_len = 6,
+        min_len = 6,
+        with = |s: &str| {
+            s.chars().all(char::is_alphabetic)
+        }
+    )
+)]
+#[derive(Deserialize, Serialize, *)]
+struct RoomId(String);
+
+impl std::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.clone().into_inner())
+    }
+}
+
+fn new_id() -> RoomId {
+    let alphabet = ('a'..='z').collect::<Vec<_>>();
+    let id = nanoid!(6, &alphabet);
+    RoomId::new(id).unwrap()
 }
 
 struct Cycler<T> {
