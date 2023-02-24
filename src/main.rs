@@ -103,9 +103,11 @@ async fn ingame(
             Html(TERA.render("404.html", &tera::Context::new()).unwrap()),
         );
     }
+    let mut context = tera::Context::new();
+    context.insert("id", &id.into_inner());
     return (
         StatusCode::OK,
-        Html(TERA.render("game.html", &tera::Context::new()).unwrap()),
+        Html(TERA.render("game.html", &context).unwrap()),
     );
 }
 
