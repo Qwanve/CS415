@@ -46,7 +46,6 @@ async fn main() -> Result<(), impl std::error::Error> {
     let app = Router::new()
         .route("/", get(home))
         .route("/create", post(create_room))
-        .route("/favicon.ico", get(error_404))
         .route("/:id", get(ingame))
         .route("/:id/ws", get(ws_handler))
         .with_state(state)
