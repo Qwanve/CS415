@@ -4,7 +4,7 @@ window.onload = function() {
   ws.onopen = function() {
     console.log("Connection Made");
     button.onclick = function() {
-      ws.send(JSON.stringify("Click"));
+      ws.send(JSON.stringify("EndTurn"));
       button.disabled = true;
     }
   }

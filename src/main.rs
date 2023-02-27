@@ -28,6 +28,9 @@ use tera::Tera;
 use tokio::sync::Mutex;
 use tower_http::catch_panic::CatchPanicLayer;
 
+mod card;
+use card::Card;
+
 static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
     Ok(t) => t,
     Err(e) => {
@@ -76,7 +79,11 @@ async fn create_room(
         Redirect::to("/")
     } else {
         println!("Created room {id}");
-        rooms.insert(id.clone(), Cycler::default());
+        let room = Room {
+            players: Cycler::default(),
+            decks: Card::shuffled_decks(),
+        };
+        rooms.insert(id.clone(), room);
         Redirect::to(&format!("/{id}"))
     }
 }
@@ -139,14 +146,14 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
         let lock = &mut state.lock().await.rooms;
         let room = lock.get_mut(&id).unwrap();
 
-        if room.len() == 0 {
+        if room.players.len() == 0 {
             let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
             let Ok(_) = sender.send(Message::Text(msg)).await else {
                 println!("Failed to send message to {who}");
                 return;
             };
         }
-        room.add((who, sender));
+        room.players.add(Player::new(who, sender, Vec::new()));
     }
 
     loop {
@@ -165,17 +172,18 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
 
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
-                Ok(PlayerAction::Click) => {
+                Ok(PlayerAction::EndTurn) => {
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
-                    if !room.is_current(|(v, _)| *v == who) {
+                    if !room.players.is_current(|p| p.who == who) {
                         println!("{who} sent their turn out of order!");
                         continue;
                     }
-                    let next = room.next_mut().unwrap();
-                    println!("It is now {}'s turn", next.0);
-                    notify_player(room).await;
+                    let next = room.players.next_mut().unwrap();
+                    println!("It is now {}'s turn", next.who);
+                    notify_player(&mut room.players).await;
                 }
+                Ok(PlayerAction::Deal) => todo!("Deal Cards"),
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -184,12 +192,12 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                 let mut lock = state.lock().await;
                 let room = lock.rooms.get_mut(&id).unwrap();
                 let was_current = {
-                    let was_current = room.is_current(|(v, _conn)| *v == who);
-                    let _old_connection = room.remove(|(v, _conn)| *v == who).unwrap();
+                    let was_current = room.players.is_current(|p| p.who == who);
+                    let _old_connection = room.players.remove(|p| p.who == who).unwrap();
                     was_current
                 };
                 if was_current {
-                    notify_player(room).await;
+                    notify_player(&mut room.players).await;
                 }
                 return;
             }
@@ -198,16 +206,16 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
     }
 }
 
-async fn notify_player(room: &mut Cycler<Connection>) {
+async fn notify_player(room: &mut Cycler<Player>) {
     while room.len() > 0 {
         let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
         let current = room.current().unwrap();
-        if current.1.send(Message::Text(msg)).await.is_ok() {
+        if current.socket.send(Message::Text(msg)).await.is_ok() {
             break;
         } else {
-            let who = current.0.clone();
-            println!("Failed to send {} notification", current.0);
-            let _old_conn = room.remove(|(v, _)| *v == who).unwrap();
+            let who = current.who.clone();
+            println!("Failed to send {} notification", current.who);
+            let _old_conn = room.remove(|p| p.who == who).unwrap();
         }
     }
 }
@@ -226,21 +234,39 @@ fn error_500() -> impl IntoResponse {
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 enum PlayerAction {
-    Click,
+    Deal,
+    EndTurn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ServerAction {
+    Dealt { player: u8, card: Card },
     YourTurn,
 }
 
-type Connection = (SocketAddr, SplitSink<WebSocket, Message>);
+// type Player = (SocketAddr, SplitSink<WebSocket, Message>);
+struct Player {
+    who: SocketAddr,
+    socket: SplitSink<WebSocket, Message>,
+    hand: Vec<Card>,
+}
+
+impl Player {
+    pub fn new(who: SocketAddr, socket: SplitSink<WebSocket, Message>, hand: Vec<Card>) -> Player {
+        Player { who, socket, hand }
+    }
+}
+
+struct Room {
+    players: Cycler<Player>,
+    decks: [Card; 52 * 8],
+}
 
 #[derive(Default)]
 struct MyState {
-    rooms: HashMap<RoomId, Cycler<Connection>>,
+    rooms: HashMap<RoomId, Room>,
 }
 
 #[nutype(
