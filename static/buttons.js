@@ -19,6 +19,8 @@ window.onload = function() {
     if(msg === "YourTurn") {
       end_turn_button.disabled = false;
       deal_button.disabled = false;
+    } else if (msg === "EndTurn") {
+      deal_button.disabled = true;
     } else if (msg.Dealt !== null) {
       let card = msg.Dealt.card;
       let img = document.createElement("img");

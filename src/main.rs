@@ -194,7 +194,13 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                         continue;
                     }
                     let card = room.decks.pop().unwrap();
+                    room.players.current().unwrap().hand.push(card);
                     notify_players_dealt(&mut room.players, card).await;
+
+                    if room.players.current().unwrap().hand.len() == 10 {
+                        println!("{who} has dealt the max hand");
+                        notify_player_end_turn(&mut room.players).await;
+                    }
                 }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
@@ -257,6 +263,12 @@ async fn notify_players_dealt(room: &mut Cycler<Player>, card: Card) {
     assert_eq!(current_index, room.current_index());
 }
 
+async fn notify_player_end_turn(room: &mut Cycler<Player>) {
+    let msg = serde_json::to_string(&ServerAction::EndTurn).unwrap();
+    let current = room.current().unwrap();
+    current.socket.send(Message::Text(msg)).await.unwrap();
+}
+
 async fn error_404() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
@@ -281,6 +293,7 @@ enum PlayerAction {
 enum ServerAction {
     Dealt { player: usize, card: Option<Card> },
     YourTurn,
+    EndTurn,
 }
 
 struct Player {
