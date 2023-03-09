@@ -21,10 +21,16 @@ window.onload = function() {
       deal_button.disabled = false;
     } else if (msg.Dealt !== null) {
       let card = msg.Dealt.card;
-      card = "" + card.rank + " of " + card.suit;
-      console.log("Player " + msg.Dealt.player + " has recieved the card " + card);
       let img = document.createElement("img");
-      img.src = "/static/cards/" + msg.Dealt.card.rank + msg.Dealt.card.suit + ".svg";
+      if (card !== null) {
+        card = "" + card.rank + " of " + card.suit;
+        console.log("Player " + msg.Dealt.player + " has recieved the card " + card);
+        img.src = "/static/cards/" + msg.Dealt.card.rank + msg.Dealt.card.suit + ".svg";
+        
+      } else {
+        console.log("Player " + msg.Dealt.player + " has recieved a card");
+        img.src = "/static/cards/back.svg";
+      }
       img.style = "width: 20%;";
       document.getElementById("player"+msg.Dealt.player).appendChild(img);
     }

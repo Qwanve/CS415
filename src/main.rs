@@ -233,18 +233,28 @@ async fn notify_player_turn(room: &mut Cycler<Player>) {
 }
 
 async fn notify_players_dealt(room: &mut Cycler<Player>, card: Card) {
+    let current_index = room.current_index();
     let action = ServerAction::Dealt {
-        player: room.current_index(),
-        card,
+        player: current_index,
+        card: Some(card),
     };
-    let current = room.current_index();
+
     let msg = serde_json::to_string(&action).unwrap();
-    for _ in 0..room.len() {
+    let current = room.current().unwrap();
+    current.socket.send(Message::Text(msg)).await.unwrap();
+
+    let action = ServerAction::Dealt {
+        player: current_index,
+        card: None,
+    };
+    let msg = serde_json::to_string(&action).unwrap();
+    for _ in 1..room.len() {
         let next = room.next_mut().unwrap();
         next.socket.send(Message::Text(msg.clone())).await.unwrap();
     }
+    let _current = room.next_mut().unwrap();
 
-    assert_eq!(current, room.current_index());
+    assert_eq!(current_index, room.current_index());
 }
 
 async fn error_404() -> impl IntoResponse {
@@ -269,7 +279,7 @@ enum PlayerAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ServerAction {
-    Dealt { player: usize, card: Card },
+    Dealt { player: usize, card: Option<Card> },
     YourTurn,
 }
 
