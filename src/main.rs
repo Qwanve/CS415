@@ -181,8 +181,16 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                         println!("{who} sent their turn out of order!");
                         continue;
                     }
-                    let next = room.players.next_mut().unwrap();
-                    println!("It is now {}'s turn", next.who);
+                    let _next = room.players.next_mut().unwrap();
+                    if room.players.current_index() == 0 {
+                        println!("Game is over");
+                        notify_player_game_end(&mut room.players).await;
+                        //TODO: Error checking on if the room still exists
+                        lock.rooms.remove(&id).unwrap();
+                        return;
+                    }
+                    let current = room.players.current().unwrap();
+                    println!("It is now {}'s turn", current.who);
                     notify_player_turn(&mut room.players).await;
                 }
                 Ok(PlayerAction::Deal) => {
@@ -209,6 +217,11 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                 println!("{who} has closed the connection");
                 let mut lock = state.lock().await;
                 let room = lock.rooms.get_mut(&id).unwrap();
+                if room.players.len() == 1 {
+                    lock.rooms.remove(&id).unwrap();
+                    println!("The last player left the game");
+                    return;
+                }
                 let was_current = {
                     let was_current = room.players.is_current(|p| p.who == who);
                     let _old_connection = room.players.remove(|p| p.who == who).unwrap();
@@ -269,6 +282,16 @@ async fn notify_player_end_turn(room: &mut Cycler<Player>) {
     current.socket.send(Message::Text(msg)).await.unwrap();
 }
 
+async fn notify_player_game_end(room: &mut Cycler<Player>) {
+    let current_index = room.current_index();
+    let msg = serde_json::to_string(&ServerAction::EndGame).unwrap();
+    for _ in 0..room.len() {
+        let next = room.next_mut().unwrap();
+        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+    assert_eq!(current_index, room.current_index());
+}
+
 async fn error_404() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
@@ -294,6 +317,7 @@ enum ServerAction {
     Dealt { player: usize, card: Option<Card> },
     YourTurn,
     EndTurn,
+    EndGame,
 }
 
 struct Player {

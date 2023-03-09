@@ -21,6 +21,11 @@ window.onload = function() {
       deal_button.disabled = false;
     } else if (msg === "EndTurn") {
       deal_button.disabled = true;
+    } else if (msg === "EndGame") {
+      alert("Game has ended");
+      deal_button.disabled = true;
+      end_turn_button.disabled = true;
+      ws.close();
     } else if (msg.Dealt !== null) {
       let card = msg.Dealt.card;
       let img = document.createElement("img");
