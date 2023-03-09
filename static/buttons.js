@@ -1,18 +1,32 @@
 window.onload = function() {
-  let button = document.getElementById("clickme");
+  let end_turn_button = document.getElementById("endturn");
+  let deal_button = document.getElementById("deal");
   let ws = new WebSocket("ws://localhost:3000" + window.location.pathname + "/ws");
   ws.onopen = function() {
     console.log("Connection Made");
-    button.onclick = function() {
+    end_turn_button.onclick = function() {
       ws.send(JSON.stringify("EndTurn"));
-      button.disabled = true;
+      end_turn_button.disabled = true;
+      deal_button.disabled = true;
+    }
+    deal_button.onclick = function() {
+      ws.send(JSON.stringify("Deal"));
     }
   }
   ws.onmessage = function(event) {
     let msg = JSON.parse(event.data);
     console.log(msg);
     if(msg === "YourTurn") {
-      button.disabled = false;
+      end_turn_button.disabled = false;
+      deal_button.disabled = false;
+    } else if (msg.Dealt !== null) {
+      let card = msg.Dealt.card;
+      card = "" + card.rank + " of " + card.suit;
+      console.log("Player " + msg.Dealt.player + " has recieved the card " + card);
+      let img = document.createElement("img");
+      img.src = "/static/cards/" + msg.Dealt.card.rank + msg.Dealt.card.suit + ".svg";
+      img.style = "width: 20%;";
+      document.getElementById("player"+msg.Dealt.player).appendChild(img);
     }
   }
 }

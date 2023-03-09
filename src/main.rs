@@ -70,22 +70,24 @@ async fn create_room(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
-    let id = new_id();
-    println!("{who} is trying to create a new room with id {id}");
-    let rooms = &mut state.lock().await.rooms;
-    if rooms.contains_key(&id) {
-        println!("Room {id} already exists");
-        //TODO: Display error
-        Redirect::to("/")
-    } else {
-        println!("Created room {id}");
-        let room = Room {
-            players: Cycler::default(),
-            decks: Card::shuffled_decks(),
-        };
-        rooms.insert(id.clone(), room);
-        Redirect::to(&format!("/{id}"))
+    for _ in 0..10 {
+        let id = new_id();
+        println!("{who} is attempting to create a room with id {id}");
+        let rooms = &mut state.lock().await.rooms;
+        if rooms.contains_key(&id) {
+            println!("Room {id} already exists");
+            continue;
+        } else {
+            println!("Created room {id}");
+            let room = Room {
+                players: Cycler::default(),
+                decks: Card::shuffled_decks().into(),
+            };
+            rooms.insert(id.clone(), room);
+            return Redirect::to(&format!("/{id}"));
+        }
     }
+    panic!("Failed to create a unique id");
 }
 
 async fn ingame(
@@ -181,9 +183,19 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     }
                     let next = room.players.next_mut().unwrap();
                     println!("It is now {}'s turn", next.who);
-                    notify_player(&mut room.players).await;
+                    notify_player_turn(&mut room.players).await;
                 }
-                Ok(PlayerAction::Deal) => todo!("Deal Cards"),
+                Ok(PlayerAction::Deal) => {
+                    println!("{who} has requested a deal");
+                    let mut lock = state.lock().await;
+                    let room = lock.rooms.get_mut(&id).unwrap();
+                    if !room.players.is_current(|p| p.who == who) {
+                        println!("{who} sent their turn out of order!");
+                        continue;
+                    }
+                    let card = room.decks.pop().unwrap();
+                    notify_players_dealt(&mut room.players, card).await;
+                }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -197,7 +209,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     was_current
                 };
                 if was_current {
-                    notify_player(&mut room.players).await;
+                    notify_player_turn(&mut room.players).await;
                 }
                 return;
             }
@@ -206,7 +218,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
     }
 }
 
-async fn notify_player(room: &mut Cycler<Player>) {
+async fn notify_player_turn(room: &mut Cycler<Player>) {
     while room.len() > 0 {
         let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
         let current = room.current().unwrap();
@@ -218,6 +230,21 @@ async fn notify_player(room: &mut Cycler<Player>) {
             let _old_conn = room.remove(|p| p.who == who).unwrap();
         }
     }
+}
+
+async fn notify_players_dealt(room: &mut Cycler<Player>, card: Card) {
+    let action = ServerAction::Dealt {
+        player: room.current_index(),
+        card,
+    };
+    let current = room.current_index();
+    let msg = serde_json::to_string(&action).unwrap();
+    for _ in 0..room.len() {
+        let next = room.next_mut().unwrap();
+        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+
+    assert_eq!(current, room.current_index());
 }
 
 async fn error_404() -> impl IntoResponse {
@@ -242,11 +269,10 @@ enum PlayerAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ServerAction {
-    Dealt { player: u8, card: Card },
+    Dealt { player: usize, card: Card },
     YourTurn,
 }
 
-// type Player = (SocketAddr, SplitSink<WebSocket, Message>);
 struct Player {
     who: SocketAddr,
     socket: SplitSink<WebSocket, Message>,
@@ -261,7 +287,7 @@ impl Player {
 
 struct Room {
     players: Cycler<Player>,
-    decks: [Card; 52 * 8],
+    decks: Vec<Card>,
 }
 
 #[derive(Default)]
@@ -324,6 +350,9 @@ impl<T> Cycler<T> {
     }
     fn current(&mut self) -> Option<&mut T> {
         self.inner.get_mut(self.index)
+    }
+    fn current_index(&self) -> usize {
+        self.index
     }
     fn remove(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
         let index = self.inner.iter().position(predicate)?;
