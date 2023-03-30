@@ -80,6 +80,7 @@ async fn create_room(
         } else {
             println!("Created room {id}");
             let room = Room {
+                started: false,
                 players: Cycler::default(),
                 decks: Card::shuffled_decks().into(),
             };
@@ -102,8 +103,16 @@ async fn ingame(
             Html(TERA.render("400.html", &tera::Context::new()).unwrap())
         );
     };
-    if state.lock().await.rooms.contains_key(&id) {
-        println!("{who} has joined game {id}");
+    if let Some(room) = state.lock().await.rooms.get(&id) {
+        println!("{who} is trying to join game {id}");
+        if room.players.len() >= 6 || room.started {
+            //TODO: Error reporting
+            println!("Game with id {id} is too full for {who}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(TERA.render("400.html", &tera::Context::new()).unwrap()),
+            );
+        }
     } else {
         println!("{who} joined a game that doesn't exist");
         return (
@@ -149,13 +158,14 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
         let room = lock.get_mut(&id).unwrap();
 
         if room.players.len() == 0 {
-            let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+            let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
             let Ok(_) = sender.send(Message::Text(msg)).await else {
                 println!("Failed to send message to {who}");
                 return;
             };
         }
         room.players.add(Player::new(who, sender, Vec::new()));
+        notify_players_new_player(&mut room.players).await;
     }
 
     loop {
@@ -174,6 +184,13 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
 
         match msg {
             Message::Text(msg) => match serde_json::from_str(&msg) {
+                Ok(PlayerAction::GameStart) => {
+                    //TODO: Validation
+                    let mut lock = state.lock().await;
+                    let room = lock.rooms.get_mut(&id).unwrap();
+                    room.started = true;
+                    notify_player_turn(&mut room.players).await;
+                }
                 Ok(PlayerAction::EndTurn) => {
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
@@ -203,7 +220,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     }
                     let card = room.decks.pop().unwrap();
                     room.players.current().unwrap().hand.push(card);
-                    notify_players_dealt(&mut room.players, card).await;
+                    notify_players_dealt_face_down(&mut room.players, card).await;
 
                     if room.players.current().unwrap().hand.len() == 10 {
                         println!("{who} has dealt the max hand");
@@ -216,25 +233,56 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
             Message::Close(_) => {
                 println!("{who} has closed the connection");
                 let mut lock = state.lock().await;
-                let room = lock.rooms.get_mut(&id).unwrap();
-                if room.players.len() == 1 {
-                    lock.rooms.remove(&id).unwrap();
-                    println!("The last player left the game");
-                    return;
-                }
-                let was_current = {
-                    let was_current = room.players.is_current(|p| p.who == who);
+                if let Some(room) = lock.rooms.get_mut(&id) {
+                    if room.players.len() == 1 {
+                        lock.rooms.remove(&id).unwrap();
+                        println!("The last player left the game");
+                        return;
+                    }
+
+                    let old_index = room.players.find(|p| p.who == who).unwrap();
+                    let was_current = old_index == room.players.current_index();
                     let _old_connection = room.players.remove(|p| p.who == who).unwrap();
-                    was_current
-                };
-                if was_current {
-                    notify_player_turn(&mut room.players).await;
+
+                    notify_players_leave(&mut room.players, old_index).await;
+
+                    if was_current {
+                        if room.started {
+                            notify_player_turn(&mut room.players).await;
+                        } else {
+                            notify_player_next_host(&mut room.players).await;
+                        }
+                    }
+                } else {
+                    println!("Player left non-existent game");
                 }
                 return;
             }
             _ => println!("Unknown message {msg:?}"),
         }
     }
+}
+
+async fn notify_players_new_player(room: &mut Cycler<Player>) {
+    let msg = serde_json::to_string(&ServerAction::PlayerJoin { player: room.len() }).unwrap();
+    for _ in 0..room.len() {
+        let next = room.next_mut().unwrap();
+        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+}
+
+async fn notify_players_leave(room: &mut Cycler<Player>, player: usize) {
+    let msg = serde_json::to_string(&ServerAction::PlayerLeave { player }).unwrap();
+    for _ in 0..room.len() {
+        let next = room.next_mut().unwrap();
+        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+}
+
+async fn notify_player_next_host(room: &mut Cycler<Player>) {
+    let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
+    let current = room.current().unwrap();
+    current.socket.send(Message::Text(msg)).await.unwrap();
 }
 
 async fn notify_player_turn(room: &mut Cycler<Player>) {
@@ -251,7 +299,7 @@ async fn notify_player_turn(room: &mut Cycler<Player>) {
     }
 }
 
-async fn notify_players_dealt(room: &mut Cycler<Player>, card: Card) {
+async fn notify_players_dealt_face_down(room: &mut Cycler<Player>, card: Card) {
     let current_index = room.current_index();
     let action = ServerAction::Dealt {
         player: current_index,
@@ -276,6 +324,22 @@ async fn notify_players_dealt(room: &mut Cycler<Player>, card: Card) {
     assert_eq!(current_index, room.current_index());
 }
 
+async fn notify_players_dealt_face_up(room: &mut Cycler<Player>, card: Card) {
+    let current_index = room.current_index();
+    let action = ServerAction::Dealt {
+        player: current_index,
+        card: Some(card),
+    };
+
+    let msg = serde_json::to_string(&action).unwrap();
+    for _ in 0..room.len() {
+        let next = room.next_mut().unwrap();
+        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+
+    assert_eq!(current_index, room.current_index());
+}
+
 async fn notify_player_end_turn(room: &mut Cycler<Player>) {
     let msg = serde_json::to_string(&ServerAction::EndTurn).unwrap();
     let current = room.current().unwrap();
@@ -284,6 +348,17 @@ async fn notify_player_end_turn(room: &mut Cycler<Player>) {
 
 async fn notify_player_game_end(room: &mut Cycler<Player>) {
     let current_index = room.current_index();
+    for _ in 0..room.len() {
+        let action = ServerAction::TotalHand {
+            player: room.current_index(),
+            hand: room.current().unwrap().hand.clone(),
+        };
+        let msg = serde_json::to_string(&action).unwrap();
+        for _ in 1..room.len() {
+            let next = room.next_mut().unwrap();
+            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
+    }
     let msg = serde_json::to_string(&ServerAction::EndGame).unwrap();
     for _ in 0..room.len() {
         let next = room.next_mut().unwrap();
@@ -308,13 +383,18 @@ fn error_500() -> impl IntoResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 enum PlayerAction {
+    GameStart,
     Deal,
     EndTurn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 enum ServerAction {
+    PlayerJoin { player: usize },
+    PlayerLeave { player: usize },
+    NewHost,
     Dealt { player: usize, card: Option<Card> },
+    TotalHand { player: usize, hand: Vec<Card> },
     YourTurn,
     EndTurn,
     EndGame,
@@ -333,6 +413,7 @@ impl Player {
 }
 
 struct Room {
+    started: bool,
     players: Cycler<Player>,
     decks: Vec<Card>,
 }
@@ -388,8 +469,11 @@ impl<T> Cycler<T> {
     fn len(&self) -> usize {
         self.inner.len()
     }
+    fn find(&self, predicate: impl FnMut(&T) -> bool) -> Option<usize> {
+        self.inner.iter().position(predicate)
+    }
     fn is_current(&self, predicate: impl FnMut(&T) -> bool) -> bool {
-        let index = self.inner.iter().position(predicate);
+        let index = self.find(predicate);
         let Some(index) = index else {
             return false;
         };

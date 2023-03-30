@@ -26,7 +26,26 @@ window.onload = function() {
       deal_button.disabled = true;
       end_turn_button.disabled = true;
       ws.close();
-    } else if (msg.Dealt !== null) {
+    } else if (msg === "NewHost") {
+      let start_button = document.getElementById("start");
+      start_button.removeAttribute("hidden");
+      start_button.disabled = false;
+      start_button.onclick = function() {
+        ws.send(JSON.stringify("GameStart"));
+        start_button.disabled = true;
+        start_button.hidden = true;
+      }
+    } else if (msg.hasOwnProperty('PlayerJoin')) {
+      for (let i = 0; i < msg.PlayerJoin.player; i++) {
+        console.log(i);
+        let player = document.getElementById("player" + i);
+        player.removeAttribute("hidden");
+      }
+    } else if (msg.hasOwnProperty('PlayerLeave')) {
+      let player = document.getElementById("player" + msg.PlayerLeave.player);
+      player.setAttribute("hidden", "");
+    } else if (msg.hasOwnProperty('Dealt')) {
+      console.log("test");
       let card = msg.Dealt.card;
       let img = document.createElement("img");
       if (card !== null) {
@@ -40,6 +59,14 @@ window.onload = function() {
       }
       img.style = "width: 20%;";
       document.getElementById("player"+msg.Dealt.player).appendChild(img);
+    } else if (msg.hasOwnProperty('TotalHand')) {
+      let player = msg.TotalHand.player;
+      let player_cards = document.getElementById('player' + player);
+      let imgs = Array.from(player_cards.children);
+      for (i in msg.TotalHand.hand) {
+        let card = msg.TotalHand.hand[i];
+        imgs[i].src = "/static/cards/" + card.rank + card.suit + ".svg";
+      }
     }
   }
 }
