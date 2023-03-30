@@ -2,7 +2,7 @@ use enum_iterator::{all, Sequence};
 use serde::Serialize;
 
 #[derive(Sequence, Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-enum Suit {
+pub enum Suit {
     Hearts,
     Diamonds,
     Clubs,
@@ -10,7 +10,7 @@ enum Suit {
 }
 
 #[derive(Sequence, Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-enum Rank {
+pub enum Rank {
     Ace,
     Two,
     Three,
@@ -28,8 +28,8 @@ enum Rank {
 
 #[derive(Serialize, Sequence, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Card {
-    suit: Suit,
-    rank: Rank,
+    pub suit: Suit,
+    pub rank: Rank,
 }
 
 impl Card {

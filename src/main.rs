@@ -411,6 +411,57 @@ impl Player {
     }
 }
 
+struct Hand(Vec<Card>);
+
+#[derive(Clone, Copy)]
+enum Score {
+    Blackjack,
+    Points(u8),
+}
+
+impl Score {
+    fn to_points(&self) -> Self {
+        match self {
+            Self::Blackjack => Self::Points(21),
+            Self::Points(_) => *self,
+        }
+    }
+}
+
+impl Hand {
+    fn score(&self) -> Score {
+        let mut score = 0;
+        let mut found_ace = false;
+        for card in self.0.iter() {
+            score += match card.rank {
+                card::Rank::Ace => {
+                    found_ace = true;
+                    1
+                }
+                card::Rank::Two => 2,
+                card::Rank::Three => 3,
+                card::Rank::Four => 4,
+                card::Rank::Five => 5,
+                card::Rank::Six => 6,
+                card::Rank::Seven => 7,
+                card::Rank::Eight => 8,
+                card::Rank::Nine => 9,
+                card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
+            };
+        }
+
+        if found_ace && score < 12 {
+            score += 10;
+        }
+
+        if score == 21 {
+            Score::Blackjack
+        } else {
+            Score::Points(score)
+        }
+    }
+}
+
 struct Room {
     started: bool,
     players: Cycler<Player>,
