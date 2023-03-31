@@ -370,12 +370,39 @@ impl Cycler<Player> {
                 next.socket.send(Message::Text(msg.clone())).await.unwrap();
             }
         }
-        let msg = serde_json::to_string(&ServerAction::EndGame).unwrap();
+        let winning_players = self.caculate_winners();
+        let winner_msg = serde_json::to_string(&ServerAction::EndGame { winner: true }).unwrap();
+        let loser_msg = serde_json::to_string(&ServerAction::EndGame { winner: false }).unwrap();
         for _ in 0..self.len() {
-            let next = self.next_mut().unwrap();
-            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+            let _ = self.next_mut().unwrap();
+            let next_index = self.current_index();
+            let next = self.current().unwrap();
+            if winning_players.contains(&next_index) {
+                next.socket
+                    .send(Message::Text(winner_msg.clone()))
+                    .await
+                    .unwrap();
+            } else {
+                next.socket
+                    .send(Message::Text(loser_msg.clone()))
+                    .await
+                    .unwrap();
+            }
         }
         assert_eq!(current_index, self.current_index());
+    }
+
+    fn caculate_winners(&mut self) -> Vec<usize> {
+        let mut scores = vec![];
+        for _ in 0..self.len() {
+            let current_index = self.current_index();
+            let current = self.current().unwrap();
+            scores.push((current_index, score(&current.hand)));
+        }
+        scores.sort_unstable_by_key(|x| x.1);
+        let max = scores.first().unwrap().1;
+        scores.retain(|x| x.1 == max);
+        scores.into_iter().map(|(player, _score)| player).collect()
     }
 }
 
@@ -409,7 +436,7 @@ enum ServerAction {
     TotalHand { player: usize, hand: Vec<Card> },
     YourTurn,
     EndTurn,
-    EndGame,
+    EndGame { winner: bool },
 }
 
 struct Player {
@@ -424,54 +451,54 @@ impl Player {
     }
 }
 
-struct Hand(Vec<Card>);
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Score {
-    Blackjack,
+    Bust,
     Points(u8),
+    Blackjack,
 }
 
 impl Score {
     fn to_points(&self) -> Self {
         match self {
             Self::Blackjack => Self::Points(21),
+            Self::Bust => Self::Points(0),
             Self::Points(_) => *self,
         }
     }
 }
 
-impl Hand {
-    fn score(&self) -> Score {
-        let mut score = 0;
-        let mut found_ace = false;
-        for card in self.0.iter() {
-            score += match card.rank {
-                card::Rank::Ace => {
-                    found_ace = true;
-                    1
-                }
-                card::Rank::Two => 2,
-                card::Rank::Three => 3,
-                card::Rank::Four => 4,
-                card::Rank::Five => 5,
-                card::Rank::Six => 6,
-                card::Rank::Seven => 7,
-                card::Rank::Eight => 8,
-                card::Rank::Nine => 9,
-                card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
-            };
-        }
+fn score(hand: &Vec<Card>) -> Score {
+    let mut score = 0;
+    let mut found_ace = false;
+    for card in hand.iter() {
+        score += match card.rank {
+            card::Rank::Ace => {
+                found_ace = true;
+                1
+            }
+            card::Rank::Two => 2,
+            card::Rank::Three => 3,
+            card::Rank::Four => 4,
+            card::Rank::Five => 5,
+            card::Rank::Six => 6,
+            card::Rank::Seven => 7,
+            card::Rank::Eight => 8,
+            card::Rank::Nine => 9,
+            card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
+        };
+    }
 
-        if found_ace && score < 12 {
-            score += 10;
-        }
+    if found_ace && score < 12 {
+        score += 10;
+    }
 
-        if score == 21 {
-            Score::Blackjack
-        } else {
-            Score::Points(score)
-        }
+    if score == 21 {
+        Score::Blackjack
+    } else if score < 21 {
+        Score::Points(score)
+    } else {
+        Score::Bust
     }
 }
 
