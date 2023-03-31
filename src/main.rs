@@ -248,7 +248,11 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
 
                     if was_current {
                         if room.started {
-                            room.players.notify_next_turn().await;
+                            if old_index == room.players.len() {
+                                room.players.notify_game_end().await;
+                            } else {
+                                room.players.notify_next_turn().await;
+                            }
                         } else {
                             room.players.notify_next_host().await;
                         }
