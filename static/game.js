@@ -13,6 +13,7 @@ window.onload = function() {
       ws.send(JSON.stringify("Deal"));
     }
   }
+  let player_count = 0;
   ws.onmessage = function(event) {
     let msg = JSON.parse(event.data);
     console.log(msg);
@@ -36,16 +37,28 @@ window.onload = function() {
         start_button.hidden = true;
       }
     } else if (msg.hasOwnProperty('PlayerJoin')) {
+      player_count = msg.PlayerJoin.player;
       for (let i = 0; i < msg.PlayerJoin.player; i++) {
-        console.log(i);
         let player = document.getElementById("player" + i);
         player.removeAttribute("hidden");
       }
     } else if (msg.hasOwnProperty('PlayerLeave')) {
-      let player = document.getElementById("player" + msg.PlayerLeave.player);
-      player.setAttribute("hidden", "");
+
+      let player_leaving = document.getElementById("player" + msg.PlayerLeave.player);
+      player_leaving.innerHTML = "";
+      for(let i = msg.PlayerLeave.player; i < player_count; i++) {
+        let oldParent = document.getElementById("player" + (i + 1));
+        let newParent = document.getElementById("player" + i);
+        while(oldParent.hasChildNodes()) {
+          console.log("moving card from " + oldParent.id + " to " + newParent.id);
+          newParent.append(oldParent.firstChild);
+        }
+      }
+      console.log("player_count:" + player_count);
+      let player = document.getElementById("player" + (player_count - 1));
+      player.setAttribute("hidden", "true");
+      player_count--;
     } else if (msg.hasOwnProperty('Dealt')) {
-      console.log("test");
       let card = msg.Dealt.card;
       let img = document.createElement("img");
       if (card !== null) {
