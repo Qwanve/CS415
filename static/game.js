@@ -22,11 +22,6 @@ window.onload = function() {
       deal_button.disabled = false;
     } else if (msg === "EndTurn") {
       deal_button.disabled = true;
-    } else if (msg === "EndGame") {
-      alert("Game has ended");
-      deal_button.disabled = true;
-      end_turn_button.disabled = true;
-      ws.close();
     } else if (msg === "NewHost") {
       let start_button = document.getElementById("start");
       start_button.removeAttribute("hidden");
@@ -36,6 +31,16 @@ window.onload = function() {
         start_button.disabled = true;
         start_button.hidden = true;
       }
+    } else if (msg.hasOwnProperty('EndGame')) {
+      if (msg.EndGame.winner) {
+        alert("Game has ended. You won.");
+      } else {
+        alert("Game has ended. You lost.");
+      }
+      deal_button.disabled = true;
+      end_turn_button.disabled = true;
+      ws.close();
+      
     } else if (msg.hasOwnProperty('PlayerJoin')) {
       player_count = msg.PlayerJoin.player;
       for (let i = 0; i < msg.PlayerJoin.player; i++) {
