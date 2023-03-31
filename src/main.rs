@@ -189,6 +189,15 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
                     room.started = true;
+                    for _ in 0..room.players.len() {
+                        let card1 = room.decks.pop().unwrap();
+                        let card2 = room.decks.pop().unwrap();
+                        room.players.notify_deal_face_up(card1).await;
+                        room.players.notify_deal_face_up(card2).await;
+                        room.players.current().unwrap().hand.push(card1);
+                        room.players.current().unwrap().hand.push(card2);
+                        let _next = room.players.next_mut().unwrap();
+                    }
                     room.players.notify_next_turn().await;
                 }
                 Ok(PlayerAction::EndTurn) => {
