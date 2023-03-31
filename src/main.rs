@@ -398,9 +398,10 @@ impl Cycler<Player> {
             let current_index = self.current_index();
             let current = self.current().unwrap();
             scores.push((current_index, score(&current.hand)));
+            self.next_mut().unwrap();
         }
         scores.sort_unstable_by_key(|x| x.1);
-        let max = scores.first().unwrap().1;
+        let max = scores.last().unwrap().1;
         scores.retain(|x| x.1 == max);
         scores.into_iter().map(|(player, _score)| player).collect()
     }
