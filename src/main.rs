@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use nanoid::nanoid;
@@ -82,6 +83,7 @@ async fn create_room(
             let room = Room {
                 started: false,
                 hands: vec![],
+                dealer_hand: vec![],
                 current_hand: 0,
                 sockets: HashMap::new(),
                 decks: Card::shuffled_decks().into(),
@@ -197,8 +199,8 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                         let card1 = room.decks.pop().unwrap();
                         let card2 = room.decks.pop().unwrap();
                         let current_hand = room.hands.iter().position(|p| p == hand).unwrap();
-                        deal_face_up(card1, current_hand, &mut room.sockets, false).await;
-                        deal_face_up(card2, current_hand, &mut room.sockets, false).await;
+                        deal_card(card1, current_hand, &mut room.sockets, false).await;
+                        deal_card(card2, current_hand, &mut room.sockets, false).await;
                         cards.push([card1, card2]);
                     }
 
@@ -206,8 +208,13 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                         .iter_mut()
                         .zip(cards.into_iter())
                         .for_each(|(hand, new_cards)| hand.hand.extend_from_slice(&new_cards));
-                    //Start TEST
-                    //End TEST
+
+                    let cards = room.decks.split_off(room.decks.len() - 2);
+                    deal_dealer(None, &mut room.sockets).await;
+                    deal_dealer(cards.get(0).copied(), &mut room.sockets).await;
+                    //TODO: End game if dealer has blackjack?
+                    room.dealer_hand = cards;
+
                     room.notify_next_turn().await;
                 }
                 Ok(PlayerAction::EndTurn) => {
@@ -251,7 +258,8 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                         .next()
                         .unwrap()
                         .0;
-                    deal_face_up(card, idx, &mut room.sockets, second).await;
+                    deal_card(card, idx, &mut room.sockets, second).await;
+                    //TODO: Busting
 
                     if room.current().unwrap().hand.len() == 10 {
                         println!("{who} has dealt the max hand");
@@ -276,8 +284,8 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let mv_card = room.hands[idx].hand.pop().unwrap();
                     room.hands[idx].hand.push(cards[1]);
                     room.notify_player_split(idx).await;
-                    deal_face_up(cards[0], idx, &mut room.sockets, true).await;
-                    deal_face_up(cards[1], idx, &mut room.sockets, false).await;
+                    deal_card(cards[0], idx, &mut room.sockets, true).await;
+                    deal_card(cards[1], idx, &mut room.sockets, false).await;
                     let hand = Hand::new(who, vec![cards[0], mv_card], true);
                     room.hands.push(hand);
                 }
@@ -391,7 +399,26 @@ impl Room {
         socket.send(Message::Text(msg)).await.unwrap();
     }
 
+    async fn dealer_turn(&mut self) {
+        loop {
+            let score = score(&self.dealer_hand);
+            //TODO: Do I want to sleep here?
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match score {
+                Score::Bust | Score::Blackjack => break,
+                Score::Points(x) if x >= 17 => break,
+                Score::Points(_) => {
+                    let card = self.decks.pop().unwrap();
+                    deal_dealer(Some(card), &mut self.sockets).await;
+                    self.dealer_hand.push(card);
+                }
+            }
+        }
+    }
+
     async fn notify_game_end(&mut self) {
+        //TODO: Find a better place than this
+        self.dealer_turn().await;
         for (mut idx, hand) in self.hands.iter().enumerate() {
             if hand.second_hand {
                 idx = self
@@ -413,6 +440,13 @@ impl Room {
                 socket.send(Message::Text(msg.clone())).await.unwrap();
             }
         }
+        let action = ServerAction::TotalDealerHand {
+            hand: self.dealer_hand.clone(),
+        };
+        let msg = serde_json::to_string(&action).unwrap();
+        for (_who, socket) in &mut self.sockets {
+            socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
         let winning_players = self.calculate_winners();
         let winner_msg = serde_json::to_string(&ServerAction::EndGame { winner: true }).unwrap();
         let loser_msg = serde_json::to_string(&ServerAction::EndGame { winner: false }).unwrap();
@@ -432,16 +466,15 @@ impl Room {
     }
 
     fn calculate_winners(&mut self) -> Vec<usize> {
-        let mut scores = self
-            .hands
+        let dealer = score(&self.dealer_hand);
+        self.hands
             .iter()
             .enumerate()
             .map(|(i, player)| (i, score(&player.hand)))
-            .collect::<Vec<_>>();
-        scores.sort_unstable_by_key(|x| x.1);
-        let max = scores.last().unwrap().1;
-        scores.retain(|x| x.1 == max);
-        scores.into_iter().map(|(player, _score)| player).collect()
+            //TODO: Pushing
+            .filter(|(_idx, score)| score > &dealer)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
     }
     fn current_mut(&mut self) -> Option<&mut Hand> {
         self.hands.get_mut(self.current_hand)
@@ -456,7 +489,7 @@ impl Room {
     }
 }
 
-async fn deal_face_up(
+async fn deal_card(
     card: Card,
     hand: usize,
     sockets: &mut HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
@@ -468,6 +501,17 @@ async fn deal_face_up(
         second_hand,
     };
 
+    let msg = serde_json::to_string(&action).unwrap();
+    for (_who, socket) in sockets {
+        socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+}
+
+async fn deal_dealer(
+    card: Option<Card>,
+    sockets: &mut HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
+) {
+    let action = ServerAction::DealDealer { card };
     let msg = serde_json::to_string(&action).unwrap();
     for (_who, socket) in sockets {
         socket.send(Message::Text(msg.clone())).await.unwrap();
@@ -518,12 +562,18 @@ enum ServerAction {
         second_hand: bool,
         hand: Vec<Card>,
     },
+    TotalDealerHand {
+        hand: Vec<Card>,
+    },
     YourTurn {
         can_split: bool,
     },
     EndTurn,
     EndGame {
         winner: bool,
+    },
+    DealDealer {
+        card: Option<Card>,
     },
 }
 
@@ -549,16 +599,6 @@ enum Score {
     Bust,
     Points(u8),
     Blackjack,
-}
-
-impl Score {
-    fn to_points(&self) -> Self {
-        match self {
-            Self::Blackjack => Self::Points(21),
-            Self::Bust => Self::Points(0),
-            Self::Points(_) => *self,
-        }
-    }
 }
 
 fn score_card(card: &Card) -> u8 {
@@ -602,6 +642,7 @@ fn score(hand: &Vec<Card>) -> Score {
 struct Room {
     started: bool,
     current_hand: usize,
+    dealer_hand: Vec<Card>,
     hands: Vec<Hand>,
     sockets: HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
     decks: Vec<Card>,

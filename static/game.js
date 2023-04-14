@@ -97,6 +97,21 @@ window.onload = function() {
         id += ".1";
       }
       document.getElementById(id).appendChild(img);
+    } else if (msg.hasOwnProperty("DealDealer")) {
+      let card = msg.DealDealer.card;
+      let img = document.createElement("img");
+      if (card !== null) {
+        card = "" + card.rank + " of " + card.suit;
+        console.log("Dealer has recieved the card " + card);
+        img.src = "/static/cards/" + msg.DealDealer.card.rank + msg.DealDealer.card.suit + ".svg";
+        
+      } else {
+        console.log("Dealer has recieved a card");
+        img.src = "/static/cards/back.svg";
+      }
+      img.style = "width: 20%;";
+      document.getElementById("dealer").appendChild(img);
+    
     } else if (msg.hasOwnProperty('TotalHand')) {
       let id = "player" + msg.TotalHand.player;
       if(msg.TotalHand.second_hand) {
@@ -106,6 +121,13 @@ window.onload = function() {
       let imgs = Array.from(player_cards.children);
       for (i in msg.TotalHand.hand) {
         let card = msg.TotalHand.hand[i];
+        imgs[i].src = "/static/cards/" + card.rank + card.suit + ".svg";
+      }
+    } else if (msg.hasOwnProperty('TotalDealerHand')) {
+      let player_cards = document.getElementById("dealer");
+      let imgs = Array.from(player_cards.children);
+      for (i in msg.TotalDealerHand.hand) {
+        let card = msg.TotalDealerHand.hand[i];
         imgs[i].src = "/static/cards/" + card.rank + card.suit + ".svg";
       }
     }
