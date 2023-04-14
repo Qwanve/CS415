@@ -165,7 +165,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
             };
         }
         room.players.add(Player::new(who, sender, Vec::new()));
-        notify_players_new_player(&mut room.players).await;
+        room.players.notify_new_player().await;
     }
 
     loop {
@@ -189,7 +189,16 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
                     room.started = true;
-                    notify_player_turn(&mut room.players).await;
+                    for _ in 0..room.players.len() {
+                        let card1 = room.decks.pop().unwrap();
+                        let card2 = room.decks.pop().unwrap();
+                        room.players.notify_deal_face_up(card1).await;
+                        room.players.notify_deal_face_up(card2).await;
+                        room.players.current().unwrap().hand.push(card1);
+                        room.players.current().unwrap().hand.push(card2);
+                        let _next = room.players.next_mut().unwrap();
+                    }
+                    room.players.notify_next_turn().await;
                 }
                 Ok(PlayerAction::EndTurn) => {
                     let mut lock = state.lock().await;
@@ -201,14 +210,14 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let _next = room.players.next_mut().unwrap();
                     if room.players.current_index() == 0 {
                         println!("Game is over");
-                        notify_player_game_end(&mut room.players).await;
+                        room.players.notify_game_end().await;
                         //TODO: Error checking on if the room still exists
                         lock.rooms.remove(&id).unwrap();
                         return;
                     }
                     let current = room.players.current().unwrap();
                     println!("It is now {}'s turn", current.who);
-                    notify_player_turn(&mut room.players).await;
+                    room.players.notify_next_turn().await;
                 }
                 Ok(PlayerAction::Deal) => {
                     println!("{who} has requested a deal");
@@ -220,11 +229,11 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     }
                     let card = room.decks.pop().unwrap();
                     room.players.current().unwrap().hand.push(card);
-                    notify_players_dealt_face_down(&mut room.players, card).await;
+                    room.players.notify_deal_face_up(card).await;
 
                     if room.players.current().unwrap().hand.len() == 10 {
                         println!("{who} has dealt the max hand");
-                        notify_player_end_turn(&mut room.players).await;
+                        room.players.notify_turn_end().await;
                     }
                 }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
@@ -244,13 +253,17 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let was_current = old_index == room.players.current_index();
                     let _old_connection = room.players.remove(|p| p.who == who).unwrap();
 
-                    notify_players_leave(&mut room.players, old_index).await;
+                    room.players.notify_player_left(old_index).await;
 
                     if was_current {
                         if room.started {
-                            notify_player_turn(&mut room.players).await;
+                            if old_index == room.players.len() {
+                                room.players.notify_game_end().await;
+                            } else {
+                                room.players.notify_next_turn().await;
+                            }
                         } else {
-                            notify_player_next_host(&mut room.players).await;
+                            room.players.notify_next_host().await;
                         }
                     }
                 } else {
@@ -263,108 +276,135 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
     }
 }
 
-async fn notify_players_new_player(room: &mut Cycler<Player>) {
-    let msg = serde_json::to_string(&ServerAction::PlayerJoin { player: room.len() }).unwrap();
-    for _ in 0..room.len() {
-        let next = room.next_mut().unwrap();
-        next.socket.send(Message::Text(msg.clone())).await.unwrap();
-    }
-}
-
-async fn notify_players_leave(room: &mut Cycler<Player>, player: usize) {
-    let msg = serde_json::to_string(&ServerAction::PlayerLeave { player }).unwrap();
-    for _ in 0..room.len() {
-        let next = room.next_mut().unwrap();
-        next.socket.send(Message::Text(msg.clone())).await.unwrap();
-    }
-}
-
-async fn notify_player_next_host(room: &mut Cycler<Player>) {
-    let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
-    let current = room.current().unwrap();
-    current.socket.send(Message::Text(msg)).await.unwrap();
-}
-
-async fn notify_player_turn(room: &mut Cycler<Player>) {
-    while room.len() > 0 {
-        let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
-        let current = room.current().unwrap();
-        if current.socket.send(Message::Text(msg)).await.is_ok() {
-            break;
-        } else {
-            let who = current.who.clone();
-            println!("Failed to send {} notification", current.who);
-            let _old_conn = room.remove(|p| p.who == who).unwrap();
-        }
-    }
-}
-
-async fn notify_players_dealt_face_down(room: &mut Cycler<Player>, card: Card) {
-    let current_index = room.current_index();
-    let action = ServerAction::Dealt {
-        player: current_index,
-        card: Some(card),
-    };
-
-    let msg = serde_json::to_string(&action).unwrap();
-    let current = room.current().unwrap();
-    current.socket.send(Message::Text(msg)).await.unwrap();
-
-    let action = ServerAction::Dealt {
-        player: current_index,
-        card: None,
-    };
-    let msg = serde_json::to_string(&action).unwrap();
-    for _ in 1..room.len() {
-        let next = room.next_mut().unwrap();
-        next.socket.send(Message::Text(msg.clone())).await.unwrap();
-    }
-    let _current = room.next_mut().unwrap();
-
-    assert_eq!(current_index, room.current_index());
-}
-
-async fn notify_players_dealt_face_up(room: &mut Cycler<Player>, card: Card) {
-    let current_index = room.current_index();
-    let action = ServerAction::Dealt {
-        player: current_index,
-        card: Some(card),
-    };
-
-    let msg = serde_json::to_string(&action).unwrap();
-    for _ in 0..room.len() {
-        let next = room.next_mut().unwrap();
-        next.socket.send(Message::Text(msg.clone())).await.unwrap();
-    }
-
-    assert_eq!(current_index, room.current_index());
-}
-
-async fn notify_player_end_turn(room: &mut Cycler<Player>) {
-    let msg = serde_json::to_string(&ServerAction::EndTurn).unwrap();
-    let current = room.current().unwrap();
-    current.socket.send(Message::Text(msg)).await.unwrap();
-}
-
-async fn notify_player_game_end(room: &mut Cycler<Player>) {
-    let current_index = room.current_index();
-    for _ in 0..room.len() {
-        let action = ServerAction::TotalHand {
-            player: room.current_index(),
-            hand: room.current().unwrap().hand.clone(),
-        };
-        let msg = serde_json::to_string(&action).unwrap();
-        for _ in 1..room.len() {
-            let next = room.next_mut().unwrap();
+impl Cycler<Player> {
+    async fn notify_new_player(&mut self) {
+        let msg = serde_json::to_string(&ServerAction::PlayerJoin { player: self.len() }).unwrap();
+        for _ in 0..self.len() {
+            let next = self.next_mut().unwrap();
             next.socket.send(Message::Text(msg.clone())).await.unwrap();
         }
     }
-    let msg = serde_json::to_string(&ServerAction::EndGame).unwrap();
-    for _ in 0..room.len() {
-        let next = room.next_mut().unwrap();
-        next.socket.send(Message::Text(msg.clone())).await.unwrap();
+    async fn notify_player_left(&mut self, player: usize) {
+        let msg = serde_json::to_string(&ServerAction::PlayerLeave { player }).unwrap();
+        for _ in 0..self.len() {
+            let next = self.next_mut().unwrap();
+            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
     }
-    assert_eq!(current_index, room.current_index());
+    async fn notify_next_host(&mut self) {
+        let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
+        let current = self.current().unwrap();
+        current.socket.send(Message::Text(msg)).await.unwrap();
+    }
+    async fn notify_next_turn(&mut self) {
+        while self.len() > 0 {
+            let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
+            let current = self.current().unwrap();
+            if current.socket.send(Message::Text(msg)).await.is_ok() {
+                break;
+            } else {
+                let who = current.who.clone();
+                println!("Failed to send {} notification", current.who);
+                let _old_conn = self.remove(|p| p.who == who).unwrap();
+            }
+        }
+    }
+
+    async fn notify_deal_face_down(&mut self, card: Card) {
+        let current_index = self.current_index();
+        let action = ServerAction::Dealt {
+            player: current_index,
+            card: Some(card),
+        };
+
+        let msg = serde_json::to_string(&action).unwrap();
+        let current = self.current().unwrap();
+        current.socket.send(Message::Text(msg)).await.unwrap();
+
+        let action = ServerAction::Dealt {
+            player: current_index,
+            card: None,
+        };
+        let msg = serde_json::to_string(&action).unwrap();
+        for _ in 1..self.len() {
+            let next = self.next_mut().unwrap();
+            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
+        let _current = self.next_mut().unwrap();
+
+        assert_eq!(current_index, self.current_index());
+    }
+
+    async fn notify_deal_face_up(&mut self, card: Card) {
+        let current_index = self.current_index();
+        let action = ServerAction::Dealt {
+            player: current_index,
+            card: Some(card),
+        };
+
+        let msg = serde_json::to_string(&action).unwrap();
+        for _ in 0..self.len() {
+            let next = self.next_mut().unwrap();
+            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
+
+        assert_eq!(current_index, self.current_index());
+    }
+
+    async fn notify_turn_end(&mut self) {
+        let msg = serde_json::to_string(&ServerAction::EndTurn).unwrap();
+        let current = self.current().unwrap();
+        current.socket.send(Message::Text(msg)).await.unwrap();
+    }
+
+    async fn notify_game_end(&mut self) {
+        let current_index = self.current_index();
+        for _ in 0..self.len() {
+            let action = ServerAction::TotalHand {
+                player: self.current_index(),
+                hand: self.current().unwrap().hand.clone(),
+            };
+            let msg = serde_json::to_string(&action).unwrap();
+            for _ in 1..self.len() {
+                let next = self.next_mut().unwrap();
+                next.socket.send(Message::Text(msg.clone())).await.unwrap();
+            }
+        }
+        let winning_players = self.caculate_winners();
+        let winner_msg = serde_json::to_string(&ServerAction::EndGame { winner: true }).unwrap();
+        let loser_msg = serde_json::to_string(&ServerAction::EndGame { winner: false }).unwrap();
+        for _ in 0..self.len() {
+            let _ = self.next_mut().unwrap();
+            let next_index = self.current_index();
+            let next = self.current().unwrap();
+            if winning_players.contains(&next_index) {
+                next.socket
+                    .send(Message::Text(winner_msg.clone()))
+                    .await
+                    .unwrap();
+            } else {
+                next.socket
+                    .send(Message::Text(loser_msg.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(current_index, self.current_index());
+    }
+
+    fn caculate_winners(&mut self) -> Vec<usize> {
+        let mut scores = vec![];
+        for _ in 0..self.len() {
+            let current_index = self.current_index();
+            let current = self.current().unwrap();
+            scores.push((current_index, score(&current.hand)));
+            self.next_mut().unwrap();
+        }
+        scores.sort_unstable_by_key(|x| x.1);
+        let max = scores.last().unwrap().1;
+        scores.retain(|x| x.1 == max);
+        scores.into_iter().map(|(player, _score)| player).collect()
+    }
 }
 
 async fn error_404() -> impl IntoResponse {
@@ -397,7 +437,7 @@ enum ServerAction {
     TotalHand { player: usize, hand: Vec<Card> },
     YourTurn,
     EndTurn,
-    EndGame,
+    EndGame { winner: bool },
 }
 
 struct Player {
@@ -409,6 +449,57 @@ struct Player {
 impl Player {
     pub fn new(who: SocketAddr, socket: SplitSink<WebSocket, Message>, hand: Vec<Card>) -> Player {
         Player { who, socket, hand }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Score {
+    Bust,
+    Points(u8),
+    Blackjack,
+}
+
+impl Score {
+    fn to_points(&self) -> Self {
+        match self {
+            Self::Blackjack => Self::Points(21),
+            Self::Bust => Self::Points(0),
+            Self::Points(_) => *self,
+        }
+    }
+}
+
+fn score(hand: &Vec<Card>) -> Score {
+    let mut score = 0;
+    let mut found_ace = false;
+    for card in hand.iter() {
+        score += match card.rank {
+            card::Rank::Ace => {
+                found_ace = true;
+                1
+            }
+            card::Rank::Two => 2,
+            card::Rank::Three => 3,
+            card::Rank::Four => 4,
+            card::Rank::Five => 5,
+            card::Rank::Six => 6,
+            card::Rank::Seven => 7,
+            card::Rank::Eight => 8,
+            card::Rank::Nine => 9,
+            card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
+        };
+    }
+
+    if found_ace && score < 12 {
+        score += 10;
+    }
+
+    if score == 21 {
+        Score::Blackjack
+    } else if score < 21 {
+        Score::Points(score)
+    } else {
+        Score::Bust
     }
 }
 
