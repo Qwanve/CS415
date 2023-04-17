@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use nanoid::nanoid;
@@ -81,7 +82,10 @@ async fn create_room(
             println!("Created room {id}");
             let room = Room {
                 started: false,
-                players: Cycler::default(),
+                hands: vec![],
+                dealer_hand: vec![],
+                current_hand: 0,
+                sockets: HashMap::new(),
                 decks: Card::shuffled_decks().into(),
             };
             rooms.insert(id.clone(), room);
@@ -105,7 +109,7 @@ async fn ingame(
     };
     if let Some(room) = state.lock().await.rooms.get(&id) {
         println!("{who} is trying to join game {id}");
-        if room.players.len() >= 6 || room.started {
+        if room.hands.len() >= 6 || room.started {
             //TODO: Error reporting
             println!("Game with id {id} is too full for {who}");
             return (
@@ -157,15 +161,16 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
         let lock = &mut state.lock().await.rooms;
         let room = lock.get_mut(&id).unwrap();
 
-        if room.players.len() == 0 {
+        if room.hands.len() == 0 {
             let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
             let Ok(_) = sender.send(Message::Text(msg)).await else {
                 println!("Failed to send message to {who}");
                 return;
             };
         }
-        room.players.add(Player::new(who, sender, Vec::new()));
-        room.players.notify_new_player().await;
+        room.hands.push(Hand::new(who, Vec::new(), false));
+        assert!(room.sockets.insert(who.clone(), sender).is_none());
+        room.notify_new_player().await;
     }
 
     loop {
@@ -189,52 +194,100 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
                     room.started = true;
-                    for _ in 0..room.players.len() {
+                    let mut cards = vec![];
+                    for hand in &room.hands {
                         let card1 = room.decks.pop().unwrap();
                         let card2 = room.decks.pop().unwrap();
-                        room.players.notify_deal_face_up(card1).await;
-                        room.players.notify_deal_face_up(card2).await;
-                        room.players.current().unwrap().hand.push(card1);
-                        room.players.current().unwrap().hand.push(card2);
-                        let _next = room.players.next_mut().unwrap();
+                        let current_hand = room.hands.iter().position(|p| p == hand).unwrap();
+                        deal_card(card1, current_hand, &mut room.sockets, false).await;
+                        deal_card(card2, current_hand, &mut room.sockets, false).await;
+                        cards.push([card1, card2]);
                     }
-                    room.players.notify_next_turn().await;
+
+                    room.hands
+                        .iter_mut()
+                        .zip(cards.into_iter())
+                        .for_each(|(hand, new_cards)| hand.hand.extend_from_slice(&new_cards));
+
+                    let cards = room.decks.split_off(room.decks.len() - 2);
+                    deal_dealer(None, &mut room.sockets).await;
+                    deal_dealer(cards.get(0).copied(), &mut room.sockets).await;
+                    //TODO: End game if dealer has blackjack?
+                    room.dealer_hand = cards;
+
+                    room.notify_next_turn().await;
                 }
                 Ok(PlayerAction::EndTurn) => {
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
-                    if !room.players.is_current(|p| p.who == who) {
-                        println!("{who} sent their turn out of order!");
-                        continue;
-                    }
-                    let _next = room.players.next_mut().unwrap();
-                    if room.players.current_index() == 0 {
+                    //TODO: Verify it's the player's turn
+                    // if !room.players.is_current(|p| p.who == who) {
+                    //     println!("{who} sent their turn out of order!");
+                    //     continue;
+                    // }
+                    if room.current_hand == room.hands.len() - 1 {
                         println!("Game is over");
-                        room.players.notify_game_end().await;
+                        room.notify_game_end().await;
                         //TODO: Error checking on if the room still exists
                         lock.rooms.remove(&id).unwrap();
                         return;
                     }
-                    let current = room.players.current().unwrap();
+                    room.current_hand += 1;
+                    let current = room.current().unwrap();
                     println!("It is now {}'s turn", current.who);
-                    room.players.notify_next_turn().await;
+                    room.notify_next_turn().await;
                 }
                 Ok(PlayerAction::Deal) => {
                     println!("{who} has requested a deal");
                     let mut lock = state.lock().await;
                     let room = lock.rooms.get_mut(&id).unwrap();
-                    if !room.players.is_current(|p| p.who == who) {
-                        println!("{who} sent their turn out of order!");
-                        continue;
-                    }
-                    let card = room.decks.pop().unwrap();
-                    room.players.current().unwrap().hand.push(card);
-                    room.players.notify_deal_face_up(card).await;
+                    //TODO: Verify it's the players turn
+                    // if !room.players.is_current(|p| p.who == who) {
+                    //     println!("{who} sent their turn out of order!");
+                    //     continue;
+                    // }
 
-                    if room.players.current().unwrap().hand.len() == 10 {
+                    let card = room.decks.pop().unwrap();
+                    room.current_mut().unwrap().hand.push(card);
+                    let second = room.current().unwrap().second_hand;
+                    let idx = room
+                        .hands
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, hand)| !hand.second_hand && hand.who == who)
+                        .next()
+                        .unwrap()
+                        .0;
+                    deal_card(card, idx, &mut room.sockets, second).await;
+                    //TODO: Busting
+
+                    if room.current().unwrap().hand.len() == 10 {
                         println!("{who} has dealt the max hand");
-                        room.players.notify_turn_end().await;
+                        room.notify_turn_end().await;
                     }
+                }
+                Ok(PlayerAction::Split) => {
+                    //TODO: Verify
+                    println!("{who} has requested a split");
+                    let mut lock = state.lock().await;
+                    let room = lock.rooms.get_mut(&id).unwrap();
+
+                    let cards = room.decks.split_off(room.decks.len() - 2);
+                    let idx = room
+                        .hands
+                        .iter()
+                        .enumerate()
+                        .filter(|(_idx, hand)| !hand.second_hand && hand.who == who)
+                        .next()
+                        .unwrap()
+                        .0;
+                    let mv_card = room.hands[idx].hand.pop().unwrap();
+                    room.hands[idx].hand.push(cards[1]);
+                    room.notify_player_split(idx).await;
+                    deal_card(cards[0], idx, &mut room.sockets, true).await;
+                    deal_card(cards[1], idx, &mut room.sockets, false).await;
+                    let hand = Hand::new(who, vec![cards[0], mv_card], true);
+                    room.hands.push(hand);
                 }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
@@ -243,27 +296,38 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
                 println!("{who} has closed the connection");
                 let mut lock = state.lock().await;
                 if let Some(room) = lock.rooms.get_mut(&id) {
-                    if room.players.len() == 1 {
+                    if room.sockets.len() == 1 {
                         lock.rooms.remove(&id).unwrap();
                         println!("The last player left the game");
                         return;
                     }
 
-                    let old_index = room.players.find(|p| p.who == who).unwrap();
-                    let was_current = old_index == room.players.current_index();
-                    let _old_connection = room.players.remove(|p| p.who == who).unwrap();
+                    let current = room.current_hand();
+                    let old_indexes = room
+                        .hands
+                        .iter()
+                        .enumerate()
+                        .filter(|(_idx, hand)| hand.who == who)
+                        .map(|(idx, _)| idx)
+                        .collect::<Vec<_>>();
+                    let was_current = old_indexes.iter().any(|&idx| idx == current);
 
-                    room.players.notify_player_left(old_index).await;
+                    for &idx in &old_indexes {
+                        room.hands.remove(idx);
+                        room.notify_player_left(idx).await;
+                    }
+
+                    let _old_connection = room.sockets.remove(&who).unwrap();
 
                     if was_current {
                         if room.started {
-                            if old_index == room.players.len() {
-                                room.players.notify_game_end().await;
+                            if old_indexes.iter().any(|&idx| idx == room.hands.len()) {
+                                room.notify_game_end().await;
                             } else {
-                                room.players.notify_next_turn().await;
+                                room.notify_next_turn().await;
                             }
                         } else {
-                            room.players.notify_next_host().await;
+                            room.notify_next_host().await;
                         }
                     }
                 } else {
@@ -276,134 +340,181 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
     }
 }
 
-impl Cycler<Player> {
+impl Room {
     async fn notify_new_player(&mut self) {
-        let msg = serde_json::to_string(&ServerAction::PlayerJoin { player: self.len() }).unwrap();
-        for _ in 0..self.len() {
-            let next = self.next_mut().unwrap();
-            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        let players = &mut self.hands;
+        let msg = serde_json::to_string(&ServerAction::PlayerJoin {
+            player: players.len(),
+        })
+        .unwrap();
+        for player in players {
+            let socket = self.sockets.get_mut(&player.who).unwrap();
+            socket.send(Message::Text(msg.clone())).await.unwrap();
         }
     }
     async fn notify_player_left(&mut self, player: usize) {
         let msg = serde_json::to_string(&ServerAction::PlayerLeave { player }).unwrap();
-        for _ in 0..self.len() {
-            let next = self.next_mut().unwrap();
-            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        for player in &mut self.hands {
+            let socket = self.sockets.get_mut(&player.who).unwrap();
+            socket.send(Message::Text(msg.clone())).await.unwrap();
         }
     }
     async fn notify_next_host(&mut self) {
         let msg = serde_json::to_string(&ServerAction::NewHost).unwrap();
-        let current = self.current().unwrap();
-        current.socket.send(Message::Text(msg)).await.unwrap();
+        let current = self.current().unwrap().who;
+        //TODO: Verify this is correct
+        let socket = self.sockets.get_mut(&current).unwrap();
+        socket.send(Message::Text(msg)).await.unwrap();
+    }
+    async fn notify_player_split(&mut self, player: usize) {
+        let msg = serde_json::to_string(&ServerAction::PlayerSplit { player }).unwrap();
+        for (_who, socket) in &mut self.sockets {
+            socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
     }
     async fn notify_next_turn(&mut self) {
-        while self.len() > 0 {
-            let msg = serde_json::to_string(&ServerAction::YourTurn).unwrap();
-            let current = self.current().unwrap();
-            if current.socket.send(Message::Text(msg)).await.is_ok() {
-                break;
+        let mut remv = vec![];
+        for (idx, hand) in self.hands.iter().enumerate().skip(self.current_hand) {
+            let can_split =
+                !hand.second_hand && score_card(&hand.hand[0]) == score_card(&hand.hand[1]);
+            let msg = serde_json::to_string(&ServerAction::YourTurn { can_split }).unwrap();
+            let socket = self.sockets.get_mut(&hand.who).unwrap();
+            if socket.send(Message::Text(msg)).await.is_err() {
+                println!("Failed to send {} turn notification", hand.who);
+                self.sockets.remove(&hand.who);
+                remv.push(idx);
             } else {
-                let who = current.who.clone();
-                println!("Failed to send {} notification", current.who);
-                let _old_conn = self.remove(|p| p.who == who).unwrap();
+                break;
             }
         }
-    }
-
-    async fn notify_deal_face_down(&mut self, card: Card) {
-        let current_index = self.current_index();
-        let action = ServerAction::Dealt {
-            player: current_index,
-            card: Some(card),
-        };
-
-        let msg = serde_json::to_string(&action).unwrap();
-        let current = self.current().unwrap();
-        current.socket.send(Message::Text(msg)).await.unwrap();
-
-        let action = ServerAction::Dealt {
-            player: current_index,
-            card: None,
-        };
-        let msg = serde_json::to_string(&action).unwrap();
-        for _ in 1..self.len() {
-            let next = self.next_mut().unwrap();
-            next.socket.send(Message::Text(msg.clone())).await.unwrap();
+        for hand in remv {
+            self.hands.remove(hand);
         }
-        let _current = self.next_mut().unwrap();
-
-        assert_eq!(current_index, self.current_index());
-    }
-
-    async fn notify_deal_face_up(&mut self, card: Card) {
-        let current_index = self.current_index();
-        let action = ServerAction::Dealt {
-            player: current_index,
-            card: Some(card),
-        };
-
-        let msg = serde_json::to_string(&action).unwrap();
-        for _ in 0..self.len() {
-            let next = self.next_mut().unwrap();
-            next.socket.send(Message::Text(msg.clone())).await.unwrap();
-        }
-
-        assert_eq!(current_index, self.current_index());
     }
 
     async fn notify_turn_end(&mut self) {
         let msg = serde_json::to_string(&ServerAction::EndTurn).unwrap();
-        let current = self.current().unwrap();
-        current.socket.send(Message::Text(msg)).await.unwrap();
+        let current = self.current().unwrap().who;
+        let socket = self.sockets.get_mut(&current).unwrap();
+        socket.send(Message::Text(msg)).await.unwrap();
+    }
+
+    async fn dealer_turn(&mut self) {
+        loop {
+            let score = score(&self.dealer_hand);
+            //TODO: Do I want to sleep here?
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match score {
+                Score::Bust | Score::Blackjack => break,
+                Score::Points(x) if x >= 17 => break,
+                Score::Points(_) => {
+                    let card = self.decks.pop().unwrap();
+                    deal_dealer(Some(card), &mut self.sockets).await;
+                    self.dealer_hand.push(card);
+                }
+            }
+        }
     }
 
     async fn notify_game_end(&mut self) {
-        let current_index = self.current_index();
-        for _ in 0..self.len() {
+        //TODO: Find a better place than this
+        self.dealer_turn().await;
+        for (mut idx, hand) in self.hands.iter().enumerate() {
+            if hand.second_hand {
+                idx = self
+                    .hands
+                    .iter()
+                    .enumerate()
+                    .filter(|(new_idx, hand)| !hand.second_hand && new_idx != &idx)
+                    .map(|(idx, _)| idx)
+                    .next()
+                    .unwrap();
+            }
             let action = ServerAction::TotalHand {
-                player: self.current_index(),
-                hand: self.current().unwrap().hand.clone(),
+                second_hand: hand.second_hand,
+                player: idx,
+                hand: hand.hand.clone(),
             };
             let msg = serde_json::to_string(&action).unwrap();
-            for _ in 1..self.len() {
-                let next = self.next_mut().unwrap();
-                next.socket.send(Message::Text(msg.clone())).await.unwrap();
+            for (_who, socket) in &mut self.sockets {
+                socket.send(Message::Text(msg.clone())).await.unwrap();
             }
         }
-        let winning_players = self.caculate_winners();
+        let action = ServerAction::TotalDealerHand {
+            hand: self.dealer_hand.clone(),
+        };
+        let msg = serde_json::to_string(&action).unwrap();
+        for (_who, socket) in &mut self.sockets {
+            socket.send(Message::Text(msg.clone())).await.unwrap();
+        }
+        let winning_players = self.calculate_winners();
         let winner_msg = serde_json::to_string(&ServerAction::EndGame { winner: true }).unwrap();
         let loser_msg = serde_json::to_string(&ServerAction::EndGame { winner: false }).unwrap();
-        for _ in 0..self.len() {
-            let _ = self.next_mut().unwrap();
-            let next_index = self.current_index();
-            let next = self.current().unwrap();
-            if winning_players.contains(&next_index) {
-                next.socket
+        //TODO: Split hand winning
+        for (idx, hand) in self.hands.iter().enumerate() {
+            let who = hand.who;
+            let socket = self.sockets.get_mut(&who).unwrap();
+            if winning_players.contains(&idx) {
+                socket
                     .send(Message::Text(winner_msg.clone()))
                     .await
                     .unwrap();
             } else {
-                next.socket
-                    .send(Message::Text(loser_msg.clone()))
-                    .await
-                    .unwrap();
+                socket.send(Message::Text(loser_msg.clone())).await.unwrap();
             }
         }
-        assert_eq!(current_index, self.current_index());
     }
 
-    fn caculate_winners(&mut self) -> Vec<usize> {
-        let mut scores = vec![];
-        for _ in 0..self.len() {
-            let current_index = self.current_index();
-            let current = self.current().unwrap();
-            scores.push((current_index, score(&current.hand)));
-            self.next_mut().unwrap();
-        }
-        scores.sort_unstable_by_key(|x| x.1);
-        let max = scores.last().unwrap().1;
-        scores.retain(|x| x.1 == max);
-        scores.into_iter().map(|(player, _score)| player).collect()
+    fn calculate_winners(&mut self) -> Vec<usize> {
+        let dealer = score(&self.dealer_hand);
+        self.hands
+            .iter()
+            .enumerate()
+            .map(|(i, player)| (i, score(&player.hand)))
+            //TODO: Pushing
+            .filter(|(_idx, score)| score > &dealer)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
+    }
+    fn current_mut(&mut self) -> Option<&mut Hand> {
+        self.hands.get_mut(self.current_hand)
+    }
+
+    fn current(&self) -> Option<&Hand> {
+        self.hands.get(self.current_hand)
+    }
+
+    fn current_hand(&self) -> usize {
+        self.current_hand
+    }
+}
+
+async fn deal_card(
+    card: Card,
+    hand: usize,
+    sockets: &mut HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
+    second_hand: bool,
+) {
+    let action = ServerAction::Dealt {
+        hand,
+        card: Some(card),
+        second_hand,
+    };
+
+    let msg = serde_json::to_string(&action).unwrap();
+    for (_who, socket) in sockets {
+        socket.send(Message::Text(msg.clone())).await.unwrap();
+    }
+}
+
+async fn deal_dealer(
+    card: Option<Card>,
+    sockets: &mut HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
+) {
+    let action = ServerAction::DealDealer { card };
+    let msg = serde_json::to_string(&action).unwrap();
+    for (_who, socket) in sockets {
+        socket.send(Message::Text(msg.clone())).await.unwrap();
     }
 }
 
@@ -426,29 +537,60 @@ enum PlayerAction {
     GameStart,
     Deal,
     EndTurn,
+    Split,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 enum ServerAction {
-    PlayerJoin { player: usize },
-    PlayerLeave { player: usize },
+    PlayerJoin {
+        player: usize,
+    },
+    PlayerLeave {
+        player: usize,
+    },
     NewHost,
-    Dealt { player: usize, card: Option<Card> },
-    TotalHand { player: usize, hand: Vec<Card> },
-    YourTurn,
+    Dealt {
+        hand: usize,
+        card: Option<Card>,
+        second_hand: bool,
+    },
+    PlayerSplit {
+        player: usize,
+    },
+    TotalHand {
+        player: usize,
+        second_hand: bool,
+        hand: Vec<Card>,
+    },
+    TotalDealerHand {
+        hand: Vec<Card>,
+    },
+    YourTurn {
+        can_split: bool,
+    },
     EndTurn,
-    EndGame { winner: bool },
+    EndGame {
+        winner: bool,
+    },
+    DealDealer {
+        card: Option<Card>,
+    },
 }
 
-struct Player {
+#[derive(PartialEq, Eq)]
+struct Hand {
+    second_hand: bool,
     who: SocketAddr,
-    socket: SplitSink<WebSocket, Message>,
     hand: Vec<Card>,
 }
 
-impl Player {
-    pub fn new(who: SocketAddr, socket: SplitSink<WebSocket, Message>, hand: Vec<Card>) -> Player {
-        Player { who, socket, hand }
+impl Hand {
+    pub fn new(who: SocketAddr, hand: Vec<Card>, second_hand: bool) -> Hand {
+        Hand {
+            who,
+            hand,
+            second_hand,
+        }
     }
 }
 
@@ -459,13 +601,18 @@ enum Score {
     Blackjack,
 }
 
-impl Score {
-    fn to_points(&self) -> Self {
-        match self {
-            Self::Blackjack => Self::Points(21),
-            Self::Bust => Self::Points(0),
-            Self::Points(_) => *self,
-        }
+fn score_card(card: &Card) -> u8 {
+    match card.rank {
+        card::Rank::Ace => 1,
+        card::Rank::Two => 2,
+        card::Rank::Three => 3,
+        card::Rank::Four => 4,
+        card::Rank::Five => 5,
+        card::Rank::Six => 6,
+        card::Rank::Seven => 7,
+        card::Rank::Eight => 8,
+        card::Rank::Nine => 9,
+        card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
     }
 }
 
@@ -473,21 +620,10 @@ fn score(hand: &Vec<Card>) -> Score {
     let mut score = 0;
     let mut found_ace = false;
     for card in hand.iter() {
-        score += match card.rank {
-            card::Rank::Ace => {
-                found_ace = true;
-                1
-            }
-            card::Rank::Two => 2,
-            card::Rank::Three => 3,
-            card::Rank::Four => 4,
-            card::Rank::Five => 5,
-            card::Rank::Six => 6,
-            card::Rank::Seven => 7,
-            card::Rank::Eight => 8,
-            card::Rank::Nine => 9,
-            card::Rank::Ten | card::Rank::Jack | card::Rank::Queen | card::Rank::King => 10,
-        };
+        if card.rank == card::Rank::Ace {
+            found_ace = true;
+        }
+        score += score_card(&card);
     }
 
     if found_ace && score < 12 {
@@ -505,7 +641,10 @@ fn score(hand: &Vec<Card>) -> Score {
 
 struct Room {
     started: bool,
-    players: Cycler<Player>,
+    current_hand: usize,
+    dealer_hand: Vec<Card>,
+    hands: Vec<Hand>,
+    sockets: HashMap<SocketAddr, SplitSink<WebSocket, Message>>,
     decks: Vec<Card>,
 }
 
@@ -537,54 +676,4 @@ fn new_id() -> RoomId {
     let alphabet = ('a'..='z').collect::<Vec<_>>();
     let id = nanoid!(6, &alphabet);
     RoomId::new(id).unwrap()
-}
-
-struct Cycler<T> {
-    index: usize,
-    inner: Vec<T>,
-}
-
-impl<T> Default for Cycler<T> {
-    fn default() -> Self {
-        Cycler {
-            inner: Vec::new(),
-            index: 0,
-        }
-    }
-}
-
-impl<T> Cycler<T> {
-    fn add(&mut self, value: T) {
-        self.inner.push(value)
-    }
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-    fn find(&self, predicate: impl FnMut(&T) -> bool) -> Option<usize> {
-        self.inner.iter().position(predicate)
-    }
-    fn is_current(&self, predicate: impl FnMut(&T) -> bool) -> bool {
-        let index = self.find(predicate);
-        let Some(index) = index else {
-            return false;
-        };
-        index == self.index
-    }
-    fn current(&mut self) -> Option<&mut T> {
-        self.inner.get_mut(self.index)
-    }
-    fn current_index(&self) -> usize {
-        self.index
-    }
-    fn remove(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
-        let index = self.inner.iter().position(predicate)?;
-        if index == self.len() - 1 {
-            self.index = 0;
-        }
-        Some(self.inner.remove(index))
-    }
-    fn next_mut(&mut self) -> Option<&mut T> {
-        self.index = (self.index + 1) % self.inner.len();
-        self.inner.get_mut(self.index)
-    }
 }
