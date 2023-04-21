@@ -109,7 +109,7 @@ async fn ingame(
     };
     if let Some(room) = state.lock().await.rooms.get(&id) {
         println!("{who} is trying to join game {id}");
-        if room.hands.len() >= 6 || room.started {
+        if room.sockets.len() >= 6 || room.started {
             //TODO: Error reporting
             println!("Game with id {id} is too full for {who}");
             return (
@@ -139,6 +139,7 @@ async fn ws_handler(
     State(state): State<Arc<Mutex<MyState>>>,
 ) -> impl IntoResponse {
     let Some(ws) = ws else {
+        println!("{who} tried to load the websocket page");
         return (
             StatusCode::BAD_REQUEST,
             Html(TERA.render("400.html", &tera::Context::new()).unwrap())
@@ -211,7 +212,7 @@ async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Ar
 
                     let cards = room.decks.split_off(room.decks.len() - 2);
                     deal_dealer(None, &mut room.sockets).await;
-                    deal_dealer(cards.get(0).copied(), &mut room.sockets).await;
+                    deal_dealer(cards.get(1).copied(), &mut room.sockets).await;
                     //TODO: End game if dealer has blackjack?
                     room.dealer_hand = cards;
 
