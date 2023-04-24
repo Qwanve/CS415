@@ -55,6 +55,14 @@ window.onload = function() {
       }
       deal_button.disabled = true;
       end_turn_button.disabled = true;
+      let dealer_hand = msg.EndGame.dealer_hand;
+      let dealer = document.getElementById("dealer");
+      let imgs = Array.from(dealer.children);
+      for (idx in dealer_hand) {
+        let card = dealer_hand[idx]
+        imgs[idx].src = "/static/cards/" + card.rank + card.suit + ".svg";
+      }
+      
       ws.close();
       
     } else if (msg.hasOwnProperty('PlayerJoin')) {
@@ -111,25 +119,6 @@ window.onload = function() {
       }
       img.style = "width: 20%;";
       document.getElementById("dealer").appendChild(img);
-    
-    } else if (msg.hasOwnProperty('TotalHand')) {
-      let id = "player" + msg.TotalHand.player;
-      if(msg.TotalHand.second_hand) {
-        id += ".1";
-      }
-      let player_cards = document.getElementById(id);
-      let imgs = Array.from(player_cards.children);
-      for (i in msg.TotalHand.hand) {
-        let card = msg.TotalHand.hand[i];
-        imgs[i].src = "/static/cards/" + card.rank + card.suit + ".svg";
-      }
-    } else if (msg.hasOwnProperty('TotalDealerHand')) {
-      let player_cards = document.getElementById("dealer");
-      let imgs = Array.from(player_cards.children);
-      for (i in msg.TotalDealerHand.hand) {
-        let card = msg.TotalDealerHand.hand[i];
-        imgs[i].src = "/static/cards/" + card.rank + card.suit + ".svg";
-      }
     }
   }
 }
