@@ -25,9 +25,8 @@ use tower_http::catch_panic::CatchPanicLayer;
 mod card;
 use card::Card;
 
-use crate::data::Hand;
-
 mod data;
+use data::Hand;
 mod routes;
 
 type Who = SocketAddr;
@@ -159,7 +158,7 @@ async fn start_game(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
     //TODO: End game if dealer has blackjack?
 
     let current = room.current();
-    let can_split = current.hand[0] == current.hand[1];
+    let can_split = current.hand[0].score_card() == current.hand[1].score_card();
     let action = ServerAction::YourTurn { can_split };
     room.notify_current(&action).await;
 }
@@ -181,7 +180,8 @@ async fn end_turn(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
         return;
     }
     let current = room.current();
-    let can_split = !current.is_second() && current.hand[0] == current.hand[1];
+    let can_split =
+        !current.is_second() && current.hand[0].score_card() == current.hand[1].score_card();
     let action = ServerAction::YourTurn { can_split };
     println!("It is now {}'s turn", current.who());
     room.notify_current(&action).await;
@@ -283,7 +283,8 @@ async fn leave(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
                 } else {
                     //TODO: call next_hand here?
                     let current = room.current();
-                    let can_split = !current.is_second() && current.hand[0] == current.hand[1];
+                    let can_split = !current.is_second()
+                        && current.hand[0].score_card() == current.hand[1].score_card();
                     let action = ServerAction::YourTurn { can_split };
                     room.notify_current(&action).await;
                 }

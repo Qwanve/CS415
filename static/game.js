@@ -75,6 +75,8 @@ window.onload = function() {
 
       let player_leaving = document.getElementById("player" + msg.PlayerLeave.player);
       player_leaving.innerHTML = "";
+      let player_leaving_split = document.getElementById("player" + msg.PlayerLeave.player + ".1");
+      player_leaving_split.innerHTML = "";
       for(let i = msg.PlayerLeave.player; i < player_count; i++) {
         let oldParent = document.getElementById("player" + (i + 1));
         let newParent = document.getElementById("player" + i);
@@ -82,10 +84,23 @@ window.onload = function() {
           console.log("moving card from " + oldParent.id + " to " + newParent.id);
           newParent.append(oldParent.firstChild);
         }
+        let oldParentSplit = document.getElementById("player" + (i + 1) + ".1");
+        let newParentSplit = document.getElementById("player" + i + ".1");
+        if (!oldParentSplit.hasAttribute("hidden")) {
+          newParentSplit.removeAttribute("hidden");
+          while(oldParentSplit.hasChildNodes()) {
+            console.log("moving card from " + oldParent.id + ".1 to " + newParent.id);
+            newParentSplit.append(oldParentSplit.firstChild);
+          }
+          oldParentSplit.setAttribute("hidden", "true");
+        }
       }
       console.log("player_count:" + player_count);
       let player = document.getElementById("player" + (player_count - 1));
       player.setAttribute("hidden", "true");
+
+      let player_split = document.getElementById("player" + (player_count - 1) + ".1");
+      player_split.setAttribute("hidden", "true");
       player_count--;
     } else if (msg.hasOwnProperty('Dealt')) {
       let card = msg.Dealt.card;
