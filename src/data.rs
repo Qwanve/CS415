@@ -1,3 +1,4 @@
+use sqlx::SqlitePool;
 use std::{collections::HashMap, net::SocketAddr};
 
 use axum::extract::ws::Message;
@@ -107,9 +108,18 @@ impl Room {
     }
 }
 
-#[derive(Default)]
 pub struct MyState {
     pub rooms: HashMap<RoomId, Room>,
+    pub database: SqlitePool,
+}
+
+impl MyState {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            database: pool,
+            rooms: HashMap::new(),
+        }
+    }
 }
 
 #[nutype(

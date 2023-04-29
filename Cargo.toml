@@ -20,3 +20,6 @@ async-mutex = "1.4.0"
 nanoid = "0.4"
 nutype = {version ="0.1.1", features = ["serde1"]}
 enum-iterator = "1"
+sqlx = { version = "0.6.3", features = ["runtime-tokio-rustls", "sqlite"] }
+tower = "0.4.13"
+axum-login = { version = "0.5.0", features = ["sqlite", "sqlx"] }

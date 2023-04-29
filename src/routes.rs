@@ -4,6 +4,7 @@ use axum::{
     extract::{ConnectInfo, Path, State, WebSocketUpgrade},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect},
+    Extension,
 };
 use once_cell::sync::Lazy;
 use tera::Tera;
@@ -12,7 +13,7 @@ use tokio::sync::Mutex;
 use crate::{
     card::Card,
     data::{new_id, MyState, Room, RoomId},
-    websocket,
+    websocket, Auth, User,
 };
 
 static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
@@ -23,13 +24,16 @@ static TERA: Lazy<Tera> = Lazy::new(|| match Tera::new("templates/**/*") {
     }
 });
 
-pub async fn home() -> impl IntoResponse {
-    Html(TERA.render("index.html", &tera::Context::new()).unwrap())
+pub async fn home(auth: Auth) -> impl IntoResponse {
+    let mut context = tera::Context::new();
+    context.insert("is_logged_in", &auth.current_user.is_some());
+    Html(TERA.render("index.html", &context).unwrap())
 }
 
 pub async fn create_room(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(state): State<Arc<Mutex<MyState>>>,
+    Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     for _ in 0..10 {
         let id = new_id();
@@ -90,6 +94,7 @@ pub async fn ws_handler(
     Path(id): Path<RoomId>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(state): State<Arc<Mutex<MyState>>>,
+    Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     let Some(ws) = ws else {
         println!("{who} tried to load the websocket page");
@@ -98,7 +103,7 @@ pub async fn ws_handler(
             Html(TERA.render("400.html", &tera::Context::new()).unwrap())
         ).into_response();
     };
-    ws.on_upgrade(move |socket| websocket(socket, who, id, state))
+    ws.on_upgrade(move |socket| websocket(socket, who, id, state, user))
 }
 
 pub async fn error_404() -> impl IntoResponse {

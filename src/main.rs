@@ -10,16 +10,27 @@ use serde::{Deserialize, Serialize};
 
 use axum::{
     extract::ws::{Message, WebSocket},
+    http::StatusCode,
     response::IntoResponse,
+    response::Redirect,
+    response::Response,
     routing::{get, post},
     Router,
 };
 use axum_extra::routing::SpaRouter;
+use axum_login::{
+    axum_sessions::{async_session::MemoryStore as SessionMemoryStore, SessionLayer},
+    extractors::AuthContext,
+    secrecy::SecretVec,
+    AuthLayer, AuthUser, RequireAuthorizationLayer, SqliteStore,
+};
 use futures::{
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
 };
+use sqlx::SqlitePool;
 use tokio::sync::Mutex;
+use tower::builder::ServiceBuilder;
 use tower_http::catch_panic::CatchPanicLayer;
 
 mod card;
@@ -32,32 +43,99 @@ mod routes;
 type Who = SocketAddr;
 type Socket = SplitSink<WebSocket, Message>;
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct User {
+    id: i64,
+    username: String,
+    password: String,
+    balance: i64,
+}
+
+impl AuthUser<i64, ()> for User {
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+
+    fn get_password_hash(&self) -> SecretVec<u8> {
+        SecretVec::new(self.password.clone().into())
+    }
+
+    fn get_role(&self) -> Option<()> {
+        None
+    }
+}
+
+type Auth = AuthContext<i64, User, SqliteStore<User>, ()>;
+
 #[tokio::main]
-async fn main() -> Result<(), impl std::error::Error> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //Force initialization in the beginning to ensure all templates parse before
     // opening the server to users
+
+    let secret = std::array::from_fn::<u8, 64, _>(|_| fastrand::u8(0..u8::MAX));
+    let session_store = SessionMemoryStore::new();
+    let session_layer = SessionLayer::new(session_store, &secret);
+    let connection = SqlitePool::connect("sqlite://database").await.unwrap();
+
+    sqlx::query!(
+        "
+            CREATE TABLE IF NOT EXISTS Users (
+                id int NOT NULL UNIQUE PRIMARY KEY,
+                username varchar(255) NOT NULL UNIQUE,
+                password varchar(255) NOT NULL,
+                balance int NOT NULL
+            )
+        "
+    )
+    .execute(&connection)
+    .await?;
+
+    let state = connection.clone();
+    let sqlite_store = SqliteStore::<User>::new(connection);
+    let auth_layer = AuthLayer::new(sqlite_store, &secret);
+
     // Lazy::force(&TERA);
-    let state = Arc::new(Mutex::new(data::MyState::default()));
+    let state = Arc::new(Mutex::new(data::MyState::new(state)));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
-        .route("/", get(routes::home))
         .route("/create", post(routes::create_room))
         .route("/:id", get(routes::ingame))
         .route("/:id/ws", get(routes::ws_handler))
+        .route_layer(RequireAuthorizationLayer::<i64, User, ()>::login())
+        .route("/", get(routes::home))
         .with_state(state)
         .merge(assets)
+        .layer(
+            //Redirect to login if unauthorized
+            ServiceBuilder::new()
+                .layer(session_layer)
+                .layer(auth_layer)
+                .map_response(|r: Response<_>| {
+                    if r.status() == StatusCode::UNAUTHORIZED {
+                        Redirect::to("/login").into_response()
+                    } else {
+                        r
+                    }
+                }),
+        )
         .fallback(routes::error_404)
         .layer(CatchPanicLayer::custom(|_| {
             routes::error_500().into_response()
         }));
 
     let addr = (Ipv4Addr::LOCALHOST, 3000).into();
-    axum::Server::bind(&addr)
+    Ok(axum::Server::bind(&addr)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
+        .await?)
 }
 
-async fn websocket(mut socket: WebSocket, who: SocketAddr, id: RoomId, state: Arc<Mutex<MyState>>) {
+async fn websocket(
+    mut socket: WebSocket,
+    who: SocketAddr,
+    id: RoomId,
+    state: Arc<Mutex<MyState>>,
+    user: User,
+) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
         println!("Could not send ping to {who}");
         return;
