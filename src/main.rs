@@ -44,7 +44,7 @@ type Who = SocketAddr;
 type Socket = SplitSink<WebSocket, Message>;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct User {
+pub struct User {
     id: i64,
     username: String,
     password: String,
@@ -69,23 +69,19 @@ type Auth = AuthContext<i64, User, SqliteStore<User>, ()>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //Force initialization in the beginning to ensure all templates parse before
-    // opening the server to users
-
+    routes::template_force();
     let secret = std::array::from_fn::<u8, 64, _>(|_| fastrand::u8(0..u8::MAX));
     let session_store = SessionMemoryStore::new();
     let session_layer = SessionLayer::new(session_store, &secret);
     let connection = SqlitePool::connect("sqlite://database").await.unwrap();
 
     sqlx::query!(
-        "
-            CREATE TABLE IF NOT EXISTS Users (
-                id int NOT NULL UNIQUE PRIMARY KEY,
-                username varchar(255) NOT NULL UNIQUE,
-                password varchar(255) NOT NULL,
-                balance int NOT NULL
-            )
-        "
+        "CREATE TABLE IF NOT EXISTS Users (
+            id int NOT NULL UNIQUE PRIMARY KEY,
+            username varchar(255) NOT NULL UNIQUE,
+            password varchar(255) NOT NULL,
+            balance int NOT NULL
+        )"
     )
     .execute(&connection)
     .await?;
@@ -94,15 +90,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sqlite_store = SqliteStore::<User>::new(connection);
     let auth_layer = AuthLayer::new(sqlite_store, &secret);
 
-    // Lazy::force(&TERA);
     let state = Arc::new(Mutex::new(data::MyState::new(state)));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/create", post(routes::create_room))
         .route("/:id", get(routes::ingame))
         .route("/:id/ws", get(routes::ws_handler))
-        .route_layer(RequireAuthorizationLayer::<i64, User, ()>::login())
         .route("/", get(routes::home))
+        .route("/logout", post(routes::logout).get(routes::logout))
+        .route_layer(RequireAuthorizationLayer::<i64, User, ()>::login())
+        .route("/login", get(routes::login).post(routes::recieve_login))
         .with_state(state)
         .merge(assets)
         .layer(
@@ -137,11 +134,11 @@ async fn websocket(
     user: User,
 ) {
     let Ok(_) = socket.send(Message::Ping(vec![1, 2, 3, 4, 5, 6])).await else {
-        println!("Could not send ping to {who}");
+        println!("Could not send ping to {} ({who})", user.username);
         return;
     };
 
-    println!("Pinged {who}...");
+    println!("Pinged {} ({who})", user.username);
 
     let (mut sender, mut socket) = socket.split();
 

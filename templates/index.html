@@ -3,6 +3,9 @@
   Home
 {% endblock %}
 {% block content %}
+  <form method="POST" action="/logout">
+    <input type=submit id="logout" value="Logout">
+  </form>
   <h2> Join an existing room: </h2><br>
   <script defer src="/static/index.js"></script>
   <input type="text" id="roomid">

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %} Log In {% endblock %}
+{% block content %}
+  {% if failed %}
+    <h1 class="error"> Username or password incorrect </h1>
+  {% endif %}
+
+  <form method=POST>
+    <label> Username <input type=text name="username"> </label><br>
+    <label> Password <input type=password name="password"> </label><br>
+    <input type=submit value="Log in">
+  </form>
+{% endblock %}

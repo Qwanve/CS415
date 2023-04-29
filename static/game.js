@@ -64,6 +64,7 @@ window.onload = function() {
       }
       
       ws.close();
+      setTimeout(() => location.href = "/", 5000);
       
     } else if (msg.hasOwnProperty('PlayerJoin')) {
       player_count = msg.PlayerJoin.player;
