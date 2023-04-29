@@ -48,10 +48,17 @@ window.onload = function() {
       document.getElementById(id + ".1").appendChild(document.getElementById(id).firstChild);
       //TODO: If the player leaves?
     } else if (msg.hasOwnProperty('EndGame')) {
-      if (msg.EndGame.winner) {
-        alert("Game has ended. You won.");
-      } else {
+      let res = msg.EndGame.result;
+      if (res === "Lose") {
         alert("Game has ended. You lost.");
+      } else if (res === "Win "){
+        alert("Game has ended. You won.");
+      } else if (res === "Blackjack") {
+        alert("Game has ended. You won (Blackjack).");
+      } else if (res === "Push") {
+        alert("Game has ended. You tied.");
+      } else {
+        alert("Game has ended.");
       }
       deal_button.disabled = true;
       end_turn_button.disabled = true;

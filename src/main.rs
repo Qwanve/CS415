@@ -153,7 +153,7 @@ async fn websocket(
                 return;
             };
         }
-        room.hands.push(Hand::new(who, Vec::new(), false));
+        room.hands.push(Hand::new(who, Vec::new(), false, user.id));
         room.sockets.insert(who, sender);
         let action = ServerAction::PlayerJoin {
             player: room.sockets.len(),
@@ -180,7 +180,7 @@ async fn websocket(
                 Ok(PlayerAction::GameStart) => start_game(&state, &id, who).await,
                 Ok(PlayerAction::EndTurn) => end_turn(&state, &id, who).await,
                 Ok(PlayerAction::Deal) => deal(&state, &id, who).await,
-                Ok(PlayerAction::Split) => split(&state, &id, who).await,
+                Ok(PlayerAction::Split) => split(&state, &id, who, user.id).await,
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -291,14 +291,14 @@ async fn deal(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
     }
 }
 
-async fn split(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
+async fn split(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who, account_id: i64) {
     //TODO: Verify
     println!("{who} has requested a split");
     let mut lock = state.lock().await;
     let room = lock.rooms.get_mut(id).unwrap();
 
     let cards = room.decks.split_off(room.decks.len() - 2);
-    let mut hand = Hand::new(who, vec![], true);
+    let mut hand = Hand::new(who, vec![], true, account_id);
     let idx = room.find_first_hand(&hand);
     let mv_card = room.hands[idx].hand.pop().unwrap();
     room.hands[idx].hand.push(cards[1]);
@@ -396,41 +396,62 @@ impl Room {
         //TODO: Find a better place than this
         self.dealer_turn().await;
         let winning_players = self.calculate_winners();
-        let winner_msg = serde_json::to_string(&ServerAction::EndGame {
-            winner: true,
-            dealer_hand: self.dealer_hand.clone(),
-        })
-        .unwrap();
-        let loser_msg = serde_json::to_string(&ServerAction::EndGame {
-            winner: false,
-            dealer_hand: self.dealer_hand.clone(),
-        })
-        .unwrap();
-        for (idx, hand) in self.hands.iter().enumerate() {
+        for (hand, &result) in self.hands.iter().zip(winning_players.iter()) {
+            //TODO: Betting
             let who = hand.who();
             let socket = self.sockets.get_mut(who).unwrap();
-            if winning_players.contains(&idx) {
-                socket
-                    .send(Message::Text(winner_msg.clone()))
-                    .await
-                    .unwrap();
-            } else {
-                socket.send(Message::Text(loser_msg.clone())).await.unwrap();
-            }
+            let message = ServerAction::EndGame {
+                result,
+                dealer_hand: self.dealer_hand.clone(),
+            };
+            let message = serde_json::to_string(&message).unwrap();
+            socket.send(Message::Text(message)).await.unwrap();
         }
     }
 
-    fn calculate_winners(&mut self) -> Vec<usize> {
+    fn calculate_winners(&mut self) -> Vec<GameResult> {
         let dealer = self.dealer_hand_dummy().score();
         self.hands
             .iter()
-            .enumerate()
-            .map(|(i, player)| (i, player.score()))
-            //TODO: Pushing
-            .filter(|(_idx, score)| score > &dealer)
-            .map(|(i, _)| i)
+            .map(|player| player.score())
+            .map(|score| {
+                if score.is_bust() {
+                    return GameResult::Lose;
+                }
+                match dealer {
+                    Score::Blackjack => {
+                        if score.is_blackjack() {
+                            GameResult::Push
+                        } else {
+                            GameResult::Lose
+                        }
+                    }
+                    Score::Bust => {
+                        if score.is_blackjack() {
+                            GameResult::Blackjack
+                        } else {
+                            GameResult::Win
+                        }
+                    }
+                    Score::Points(points) => match score {
+                        Score::Blackjack => GameResult::Blackjack,
+                        Score::Points(p) if p > points => GameResult::Win,
+                        Score::Points(p) if p < points => GameResult::Lose,
+                        Score::Bust => unreachable!(),
+                        _ => GameResult::Push,
+                    },
+                }
+            })
             .collect::<Vec<_>>()
     }
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum GameResult {
+    Lose,
+    Win,
+    Push,
+    Blackjack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -471,7 +492,7 @@ pub enum ServerAction {
     },
     EndTurn,
     EndGame {
-        winner: bool,
+        result: GameResult,
         dealer_hand: Vec<Card>,
     },
     DealDealer {

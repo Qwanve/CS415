@@ -104,6 +104,7 @@ impl Room {
             //TODO: This is hacky as hell
             who: self.hands.first().unwrap().who,
             hand: self.dealer_hand.clone(),
+            account_id: 0,
         }
     }
 }
@@ -146,19 +147,22 @@ pub fn new_id() -> RoomId {
     let id = nanoid!(6, &alphabet);
     RoomId::new(id).unwrap()
 }
+
 #[derive(PartialEq, Eq)]
 pub struct Hand {
     second_hand: bool,
     who: SocketAddr,
     pub hand: Vec<Card>,
+    account_id: i64,
 }
 
 impl Hand {
-    pub fn new(who: SocketAddr, hand: Vec<Card>, second_hand: bool) -> Hand {
+    pub fn new(who: SocketAddr, hand: Vec<Card>, second_hand: bool, account_id: i64) -> Hand {
         Hand {
             who,
             hand,
             second_hand,
+            account_id,
         }
     }
     pub fn score(&self) -> Score {
@@ -188,6 +192,10 @@ impl Hand {
     pub fn is_second(&self) -> bool {
         self.second_hand
     }
+
+    pub fn account_id(&self) -> i64 {
+        self.account_id
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -195,4 +203,14 @@ pub enum Score {
     Bust,
     Points(u8),
     Blackjack,
+}
+
+impl Score {
+    pub fn is_blackjack(&self) -> bool {
+        *self == Score::Blackjack
+    }
+
+    pub fn is_bust(&self) -> bool {
+        *self == Score::Bust
+    }
 }

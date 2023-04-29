@@ -3,6 +3,7 @@
   Home
 {% endblock %}
 {% block content %}
+  <h3> Balance: {{ balance }} </h3>
   <form method="POST" action="/logout">
     <input type=submit id="logout" value="Logout">
   </form>

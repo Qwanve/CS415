@@ -64,6 +64,7 @@ pub async fn recieve_login(
     State(state): State<Arc<Mutex<MyState>>>,
     Form(request): Form<LoginRequest>,
 ) -> impl IntoResponse {
+    println!("{who} is trying to log in as {}", request.username);
     let conn = &state.lock().await.database;
     let user = sqlx::query_as!(
         User,
@@ -77,6 +78,7 @@ pub async fn recieve_login(
     .unwrap();
     if let Some(user) = user {
         auth.login(&user).await.unwrap();
+        println!("{} ({who}) logged in successfully", request.username);
         Redirect::to("/")
     } else {
         println!("{who} failed to log in. Incorrect username or password");
@@ -84,7 +86,14 @@ pub async fn recieve_login(
     }
 }
 
-pub async fn logout(mut auth: Auth) -> impl IntoResponse {
+pub async fn logout(
+    mut auth: Auth,
+    ConnectInfo(who): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    println!(
+        "{} ({who}) is logging out",
+        auth.current_user.clone().unwrap().username
+    );
     auth.logout().await;
     Redirect::to("/login")
 }
