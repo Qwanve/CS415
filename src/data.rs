@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 
 use axum::extract::ws::Message;
 use futures::SinkExt;
@@ -45,10 +46,11 @@ pub struct Room {
     pub hands: Vec<Hand>,
     pub sockets: Sockets,
     pub decks: Vec<Card>,
+    db: Arc<Mutex<SqlitePool>>,
 }
 
 impl Room {
-    pub fn new(decks: Vec<Card>) -> Self {
+    pub fn new(decks: Vec<Card>, database: Arc<Mutex<SqlitePool>>) -> Self {
         Room {
             started: false,
             current_hand: 0,
@@ -56,7 +58,12 @@ impl Room {
             hands: vec![],
             sockets: Sockets(HashMap::new()),
             decks,
+            db: database,
         }
+    }
+
+    pub fn database(&self) -> Arc<Mutex<SqlitePool>> {
+        self.db.clone()
     }
     pub fn current_mut(&mut self) -> &mut Hand {
         self.hands.get_mut(self.current_hand).unwrap()
@@ -105,19 +112,18 @@ impl Room {
             who: self.hands.first().unwrap().who,
             hand: self.dealer_hand.clone(),
             account_id: 0,
+            bet: 0,
         }
     }
 }
 
 pub struct MyState {
     pub rooms: HashMap<RoomId, Room>,
-    pub database: SqlitePool,
 }
 
 impl MyState {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new() -> Self {
         Self {
-            database: pool,
             rooms: HashMap::new(),
         }
     }
@@ -154,6 +160,7 @@ pub struct Hand {
     who: SocketAddr,
     pub hand: Vec<Card>,
     account_id: i64,
+    pub bet: u32,
 }
 
 impl Hand {
@@ -163,6 +170,7 @@ impl Hand {
             hand,
             second_hand,
             account_id,
+            bet: 0,
         }
     }
     pub fn score(&self) -> Score {

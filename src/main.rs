@@ -86,11 +86,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .execute(&connection)
     .await?;
 
-    let state = connection.clone();
+    sqlx::query!(
+        "UPDATE Users
+        SET balance = 5000"
+    )
+    .execute(&connection)
+    .await?;
+
+    let database = Arc::new(Mutex::new(connection.clone()));
     let sqlite_store = SqliteStore::<User>::new(connection);
     let auth_layer = AuthLayer::new(sqlite_store, &secret);
 
-    let state = Arc::new(Mutex::new(data::MyState::new(state)));
+    let state = Arc::new(Mutex::new(data::MyState::new()));
     let assets = SpaRouter::new("/static", "static");
     let app = Router::new()
         .route("/create", post(routes::create_room))
@@ -100,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/logout", post(routes::logout).get(routes::logout))
         .route_layer(RequireAuthorizationLayer::<i64, User, ()>::login())
         .route("/login", get(routes::login).post(routes::recieve_login))
-        .with_state(state)
+        .with_state((state, database))
         .merge(assets)
         .layer(
             //Redirect to login if unauthorized
@@ -181,6 +188,36 @@ async fn websocket(
                 Ok(PlayerAction::EndTurn) => end_turn(&state, &id, who).await,
                 Ok(PlayerAction::Deal) => deal(&state, &id, who).await,
                 Ok(PlayerAction::Split) => split(&state, &id, who, user.id).await,
+                Ok(PlayerAction::Bet { amount }) => {
+                    let mut lock = state.lock().await;
+                    let room = lock.rooms.get_mut(&id).unwrap();
+                    //TODO: Verify that it's your turn
+                    println!("{} ({who}) bet {}", user.username, amount);
+                    if amount > 0 {
+                        let hand = room.hands.iter_mut().find(|p| *p.who() == who).unwrap();
+                        hand.bet = amount;
+                    } else {
+                        println!("Bad bet amount");
+                    }
+                    let database = room.database().lock_owned().await;
+                    sqlx::query!(
+                        "UPDATE Users
+                        SET balance = balance - ?
+                        WHERE id = ?",
+                        amount,
+                        user.id
+                    )
+                    .execute(&*database)
+                    .await
+                    .unwrap();
+                    drop(database);
+                    let current = room.current();
+                    let can_split = !current.is_second()
+                        && current.hand[0].score_card() == current.hand[1].score_card();
+                    let action = ServerAction::YourTurn { can_split };
+                    println!("It is now {}'s turn", current.who());
+                    room.notify_current(&action).await;
+                }
                 Err(_) => println!("{who} sent an invalid action: {msg}"),
             },
             Message::Pong(_) => println!("Recieved pong from {who}"),
@@ -232,9 +269,7 @@ async fn start_game(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
     room.dealer_hand.extend_from_slice(&cards);
     //TODO: End game if dealer has blackjack?
 
-    let current = room.current();
-    let can_split = current.hand[0].score_card() == current.hand[1].score_card();
-    let action = ServerAction::YourTurn { can_split };
+    let action = ServerAction::RequestBet;
     room.notify_current(&action).await;
 }
 
@@ -250,16 +285,17 @@ async fn end_turn(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
     if was_last_player {
         println!("Game is over");
         room.notify_game_end().await;
-        //TODO: Error checking on if the room still exists
-        lock.rooms.remove(id).unwrap();
         return;
     }
     let current = room.current();
-    let can_split =
-        !current.is_second() && current.hand[0].score_card() == current.hand[1].score_card();
-    let action = ServerAction::YourTurn { can_split };
+    if !current.is_second() {
+        let action = ServerAction::RequestBet;
+        room.notify_current(&action).await;
+    } else {
+        let action = ServerAction::YourTurn { can_split: false };
+        room.notify_current(&action).await;
+    }
     println!("It is now {}'s turn", current.who());
-    room.notify_current(&action).await;
 }
 
 async fn deal(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
@@ -282,9 +318,8 @@ async fn deal(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
         second_hand: second,
     };
     room.notify_all(&action).await;
-    //TODO: Busting
 
-    if room.current().hand.len() == 10 {
+    if room.current().hand.len() == 10 || room.current().score().is_bust() {
         println!("{who} has dealt the max hand");
         let action = ServerAction::EndTurn;
         room.notify_current(&action).await;
@@ -302,6 +337,7 @@ async fn split(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who, account_id: i
     let idx = room.find_first_hand(&hand);
     let mv_card = room.hands[idx].hand.pop().unwrap();
     room.hands[idx].hand.push(cards[1]);
+    hand.bet = room.hands[idx].bet;
 
     let action = ServerAction::PlayerSplit { player: idx };
     room.notify_all(&action).await;
@@ -332,35 +368,32 @@ async fn leave(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
             println!("The last player left the game");
             return;
         }
-
-        let current = room.current_hand();
-        let old_indexes = room
-            .hands
-            .iter()
-            .enumerate()
-            .filter(|(_idx, hand)| hand.who() == &who)
-            .map(|(idx, _)| idx)
-            .collect::<Vec<_>>();
-        let was_current = old_indexes.iter().any(|&idx| idx == current);
-
-        for &idx in &old_indexes {
-            let action = ServerAction::PlayerLeave { player: idx };
-            room.notify_all(&action).await;
-            room.hands.remove(idx);
-        }
-
         let _old_connection = room.sockets.remove(&who).unwrap();
+
+        let hands = std::mem::replace(&mut room.hands, vec![]);
+        let (old_indexes, remaining_hands): (_, Vec<_>) = hands
+            .into_iter()
+            .enumerate()
+            .partition(|(_, hand)| hand.who() == &who);
+        let remaining_hands = remaining_hands.into_iter().map(|p| p.1).collect();
+        room.hands = remaining_hands;
+        let current = room.current_hand();
+        let was_current = old_indexes
+            .iter()
+            .position(|(idx, _)| *idx == current)
+            .is_some();
+
+        for (idx, _) in &old_indexes {
+            let action = ServerAction::PlayerLeave { player: *idx };
+            room.notify_all(&action).await;
+        }
 
         if was_current {
             if room.started {
-                if old_indexes.iter().any(|&idx| idx == room.hands.len()) {
+                if old_indexes.iter().any(|(idx, _)| *idx == room.hands.len()) {
                     room.notify_game_end().await;
                 } else {
-                    //TODO: call next_hand here?
-                    let current = room.current();
-                    let can_split = !current.is_second()
-                        && current.hand[0].score_card() == current.hand[1].score_card();
-                    let action = ServerAction::YourTurn { can_split };
+                    let action = ServerAction::RequestBet;
                     room.notify_current(&action).await;
                 }
             } else {
@@ -397,7 +430,26 @@ impl Room {
         self.dealer_turn().await;
         let winning_players = self.calculate_winners();
         for (hand, &result) in self.hands.iter().zip(winning_players.iter()) {
-            //TODO: Betting
+            let amount = i64::try_from(hand.bet).unwrap();
+            let diff: i64 = match result {
+                GameResult::Lose => 0,
+                GameResult::Win => amount * 2,
+                GameResult::Push => amount,
+                GameResult::Blackjack => (2 * amount) + (amount / 2),
+            };
+            let database = self.database();
+            let database = database.lock().await;
+            let id = hand.account_id();
+            sqlx::query!(
+                "UPDATE Users
+                SET balance = balance + ?
+                WHERE id = ?",
+                diff,
+                id,
+            )
+            .execute(&*database)
+            .await
+            .unwrap();
             let who = hand.who();
             let socket = self.sockets.get_mut(who).unwrap();
             let message = ServerAction::EndGame {
@@ -460,6 +512,7 @@ pub enum PlayerAction {
     Deal,
     EndTurn,
     Split,
+    Bet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -479,14 +532,7 @@ pub enum ServerAction {
     PlayerSplit {
         player: usize,
     },
-    // TotalHand {
-    //     player: usize,
-    //     second_hand: bool,
-    //     hand: Vec<Card>,
-    // },
-    // TotalDealerHand {
-    //     hand: Vec<Card>,
-    // },
+    RequestBet,
     YourTurn {
         can_split: bool,
     },

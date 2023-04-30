@@ -24,8 +24,11 @@ window.onload = function() {
     let msg = JSON.parse(event.data);
     console.log(msg);
     if (msg === "EndTurn") {
+
       deal_button.disabled = true;
+
     } else if (msg === "NewHost") {
+
       let start_button = document.getElementById("start");
       start_button.removeAttribute("hidden");
       start_button.disabled = false;
@@ -34,7 +37,29 @@ window.onload = function() {
         start_button.disabled = true;
         start_button.hidden = true;
       }
+
+    } else if (msg === "RequestBet") {
+
+      let bet_button = document.getElementById("bet");
+      let bet_value = document.getElementById("bet_label");
+      let bet_slider = document.getElementById("bet_amount");
+      bet_slider.onchange = function() {
+        bet_value.innerHTML = bet_slider.value;
+      }
+      bet_value.removeAttribute("hidden");
+      bet_button.removeAttribute("hidden");
+      bet_slider.removeAttribute("hidden");
+      bet_button.onclick = function() {
+        let msg = {"Bet":{"amount":Number(bet_slider.value)}};
+        ws.send(JSON.stringify(msg));
+        bet_button.hidden = "true";
+        bet_slider.hidden = "true";
+        bet_value.hidden = "true";
+        bet_slider.max -= bet_slider.value;
+      }
+
     } else if (msg.hasOwnProperty('YourTurn')) {
+
       end_turn_button.disabled = false;
       deal_button.disabled = false;
       if (msg.YourTurn.can_split) {
@@ -42,16 +67,19 @@ window.onload = function() {
         split_button.removeAttribute("hidden");
         split_button.disabled = false;
       }
+
     } else if (msg.hasOwnProperty('PlayerSplit')) {
+
       let id = "player" + msg.PlayerSplit.player;
       document.getElementById(id + ".1").removeAttribute("hidden");
       document.getElementById(id + ".1").appendChild(document.getElementById(id).firstChild);
-      //TODO: If the player leaves?
+
     } else if (msg.hasOwnProperty('EndGame')) {
+
       let res = msg.EndGame.result;
       if (res === "Lose") {
         alert("Game has ended. You lost.");
-      } else if (res === "Win "){
+      } else if (res === "Win") {
         alert("Game has ended. You won.");
       } else if (res === "Blackjack") {
         alert("Game has ended. You won (Blackjack).");
@@ -74,17 +102,21 @@ window.onload = function() {
       setTimeout(() => location.href = "/", 5000);
       
     } else if (msg.hasOwnProperty('PlayerJoin')) {
+
       player_count = msg.PlayerJoin.player;
       for (let i = 0; i < msg.PlayerJoin.player; i++) {
         let player = document.getElementById("player" + i);
         player.removeAttribute("hidden");
       }
+
     } else if (msg.hasOwnProperty('PlayerLeave')) {
 
       let player_leaving = document.getElementById("player" + msg.PlayerLeave.player);
       player_leaving.innerHTML = "";
+      player_leaving.hidden = "true";
       let player_leaving_split = document.getElementById("player" + msg.PlayerLeave.player + ".1");
       player_leaving_split.innerHTML = "";
+      player_leaving_split.hidden = "true";
       for(let i = msg.PlayerLeave.player; i < player_count; i++) {
         let oldParent = document.getElementById("player" + (i + 1));
         let newParent = document.getElementById("player" + i);
@@ -110,7 +142,9 @@ window.onload = function() {
       let player_split = document.getElementById("player" + (player_count - 1) + ".1");
       player_split.setAttribute("hidden", "true");
       player_count--;
+
     } else if (msg.hasOwnProperty('Dealt')) {
+
       let card = msg.Dealt.card;
       let img = document.createElement("img");
       if (card !== null) {
@@ -128,7 +162,9 @@ window.onload = function() {
         id += ".1";
       }
       document.getElementById(id).appendChild(img);
+
     } else if (msg.hasOwnProperty("DealDealer")) {
+
       let card = msg.DealDealer.card;
       let img = document.createElement("img");
       if (card !== null) {
@@ -142,6 +178,7 @@ window.onload = function() {
       }
       img.style = "width: 20%;";
       document.getElementById("dealer").appendChild(img);
+
     }
   }
 }

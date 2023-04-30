@@ -8,6 +8,7 @@ use axum::{
 };
 use once_cell::sync::Lazy;
 use serde::Deserialize;
+use sqlx::SqlitePool;
 use tera::Tera;
 use tokio::sync::Mutex;
 
@@ -61,11 +62,11 @@ pub struct LoginRequest {
 pub async fn recieve_login(
     mut auth: Auth,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<MyState>>>,
+    State((_state, database)): State<(Arc<Mutex<MyState>>, Arc<Mutex<SqlitePool>>)>,
     Form(request): Form<LoginRequest>,
 ) -> impl IntoResponse {
     println!("{who} is trying to log in as {}", request.username);
-    let conn = &state.lock().await.database;
+    let conn = database.lock().await;
     let user = sqlx::query_as!(
         User,
         "SELECT * FROM Users 
@@ -73,7 +74,7 @@ pub async fn recieve_login(
         request.username,
         request.password
     )
-    .fetch_optional(conn)
+    .fetch_optional(&*conn)
     .await
     .unwrap();
     if let Some(user) = user {
@@ -100,7 +101,7 @@ pub async fn logout(
 
 pub async fn create_room(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<MyState>>>,
+    State((state, database)): State<(Arc<Mutex<MyState>>, Arc<Mutex<SqlitePool>>)>,
     Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     for _ in 0..10 {
@@ -115,7 +116,7 @@ pub async fn create_room(
             continue;
         } else {
             println!("Created room {id}");
-            let room = Room::new(Card::shuffled_decks().into());
+            let room = Room::new(Card::shuffled_decks().into(), database);
             rooms.insert(id.clone(), room);
             return Redirect::to(&format!("/{id}"));
         }
@@ -126,7 +127,7 @@ pub async fn create_room(
 pub async fn ingame(
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     id: Option<Path<RoomId>>,
-    State(state): State<Arc<Mutex<MyState>>>,
+    State((state, _database)): State<(Arc<Mutex<MyState>>, Arc<Mutex<SqlitePool>>)>,
     Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     let Some(Path(id)) = id else {
@@ -169,7 +170,7 @@ pub async fn ws_handler(
     ws: Option<WebSocketUpgrade>,
     Path(id): Path<RoomId>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<Mutex<MyState>>>,
+    State((state, _database)): State<(Arc<Mutex<MyState>>, Arc<Mutex<SqlitePool>>)>,
     Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     let Some(ws) = ws else {
