@@ -1,4 +1,4 @@
-use crate::data::Room;
+use crate::{card::Rank, data::Room};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -294,6 +294,10 @@ async fn end_turn(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
     } else {
         let action = ServerAction::YourTurn { can_split: false };
         room.notify_current(&action).await;
+        if current.hand[0].rank == Rank::Ace {
+            let action = ServerAction::EndTurn;
+            room.notify_current(&action).await;
+        }
     }
     println!("It is now {}'s turn", current.who());
 }
@@ -357,6 +361,11 @@ async fn split(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who, account_id: i
     hand.hand.push(mv_card);
     hand.hand.push(cards[0]);
     room.hands.push(hand);
+
+    if hand.hand[0].rank == Rank::Ace {
+        let action = ServerAction::EndTurn;
+        room.notify_current(&action).await;
+    }
 }
 
 async fn leave(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
