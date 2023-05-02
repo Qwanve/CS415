@@ -188,9 +188,10 @@ impl Hand {
         }
 
         match score.cmp(&21) {
-            std::cmp::Ordering::Equal => Score::Blackjack,
+            std::cmp::Ordering::Equal if self.hand.len() == 2 => Score::Blackjack,
+            std::cmp::Ordering::Equal => Score::Points(score),
             std::cmp::Ordering::Less => Score::Points(score),
-            std::cmp::Ordering::Greater => Score::Bust,
+            std::cmp::Ordering::Greater => Score::Bust(score),
         }
     }
     pub fn who(&self) -> &SocketAddr {
@@ -208,7 +209,7 @@ impl Hand {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Score {
-    Bust,
+    Bust(u8),
     Points(u8),
     Blackjack,
 }
@@ -219,6 +220,6 @@ impl Score {
     }
 
     pub fn is_bust(&self) -> bool {
-        *self == Score::Bust
+        matches!(self, Score::Bust(_))
     }
 }

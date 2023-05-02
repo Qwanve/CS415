@@ -472,6 +472,25 @@ impl Room {
 
     fn calculate_winners(&mut self) -> Vec<GameResult> {
         let dealer = self.dealer_hand_dummy().score();
+        if let Score::Bust(p) = dealer {
+            if self
+                .hands
+                .iter()
+                .map(|player| player.score())
+                .all(|s| s.is_bust())
+            {
+                return self
+                    .hands
+                    .iter()
+                    .map(|player| player.score())
+                    .map(|score| match score.cmp(p) {
+                        std::cmp::Ordering::Equal => GameResult::Push,
+                        std::cmp::Ordering::Greater => GameResult::Win,
+                        std::cmp::Ordering::Less => GameResult::Lose,
+                    })
+                    .collect();
+            }
+        };
         self.hands
             .iter()
             .map(|player| player.score())
@@ -487,7 +506,7 @@ impl Room {
                             GameResult::Lose
                         }
                     }
-                    Score::Bust => {
+                    Score::Bust(_) => {
                         if score.is_blackjack() {
                             GameResult::Blackjack
                         } else {
