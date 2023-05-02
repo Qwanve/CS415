@@ -288,18 +288,20 @@ async fn end_turn(state: &Arc<Mutex<MyState>>, id: &RoomId, _who: Who) {
         return;
     }
     let current = room.current();
+    let who = *current.who();
     if !current.is_second() {
         let action = ServerAction::RequestBet;
         room.notify_current(&action).await;
     } else {
+        let stop = current.hand[0].rank == Rank::Ace;
         let action = ServerAction::YourTurn { can_split: false };
         room.notify_current(&action).await;
-        if current.hand[0].rank == Rank::Ace {
+        if stop {
             let action = ServerAction::EndTurn;
             room.notify_current(&action).await;
         }
     }
-    println!("It is now {}'s turn", current.who());
+    println!("It is now {who}'s turn");
 }
 
 async fn deal(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
@@ -360,12 +362,11 @@ async fn split(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who, account_id: i
 
     hand.hand.push(mv_card);
     hand.hand.push(cards[0]);
-    room.hands.push(hand);
-
     if hand.hand[0].rank == Rank::Ace {
         let action = ServerAction::EndTurn;
         room.notify_current(&action).await;
     }
+    room.hands.push(hand);
 }
 
 async fn leave(state: &Arc<Mutex<MyState>>, id: &RoomId, who: Who) {
@@ -422,7 +423,7 @@ impl Room {
             //TODO: Do I want to sleep here?
             tokio::time::sleep(Duration::from_millis(500)).await;
             match score {
-                Score::Bust | Score::Blackjack => break,
+                Score::Bust(_) | Score::Blackjack => break,
                 Score::Points(x) if x >= 17 => break,
                 Score::Points(_) => {
                     let card = self.decks.pop().unwrap();
@@ -483,10 +484,11 @@ impl Room {
                     .hands
                     .iter()
                     .map(|player| player.score())
-                    .map(|score| match score.cmp(p) {
-                        std::cmp::Ordering::Equal => GameResult::Push,
-                        std::cmp::Ordering::Greater => GameResult::Win,
-                        std::cmp::Ordering::Less => GameResult::Lose,
+                    .map(|score| match score {
+                        Score::Bust(c) if c == p => GameResult::Push,
+                        Score::Bust(c) if c > p => GameResult::Win,
+                        Score::Bust(c) if c < p => GameResult::Lose,
+                        _ => unreachable!(),
                     })
                     .collect();
             }
@@ -521,7 +523,7 @@ impl Room {
                         Score::Blackjack => GameResult::Blackjack,
                         Score::Points(p) if p > points => GameResult::Win,
                         Score::Points(p) if p < points => GameResult::Lose,
-                        Score::Bust => unreachable!(),
+                        Score::Bust(_) => unreachable!(),
                         _ => GameResult::Push,
                     },
                 }
@@ -544,7 +546,7 @@ pub enum PlayerAction {
     Deal,
     EndTurn,
     Split,
-    Bet,
+    Bet { amount: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
