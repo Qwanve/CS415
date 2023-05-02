@@ -491,6 +491,10 @@ impl Room {
                     .collect();
             }
         };
+        //TODO: If the second card dealt to a split ace is a 10-point card you do not
+        // receive the blackjack bonus for this hand. It does however win against an
+        // ordinary 21 made of more than two cards. If the dealer also has a blackjack
+        // the result for this hand is a push as usual.
         self.hands
             .iter()
             .map(|player| player.score())
